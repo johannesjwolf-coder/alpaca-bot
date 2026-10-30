@@ -8,12 +8,14 @@ const W = 900;
 const H = 300;
 const PAD = { l: 56, r: 14, t: 12, b: 26 };
 
-function smaSeries(closes: number[], n: number): (number | null)[] {
+/** Gleitender Durchschnitt ab Index ``start`` (wie der Bot: nur Kerzen der laufenden Sitzung). */
+function smaSeries(closes: number[], n: number, start = 0): (number | null)[] {
   let sum = 0;
   return closes.map((c, i) => {
+    if (i < start) return null;
     sum += c;
-    if (i >= n) sum -= closes[i - n];
-    return i >= n - 1 ? sum / n : null;
+    if (i - start >= n) sum -= closes[i - n];
+    return i - start >= n - 1 ? sum / n : null;
   });
 }
 
@@ -61,8 +63,15 @@ export function PriceChart({ mode, defaultSymbol }: { mode: Mode; defaultSymbol:
     const closes = res.bars.map((b) => b.c);
     const shortN = res.strategy?.short_window;
     const longN = res.strategy?.long_window;
-    const s = shortN ? smaSeries(closes, shortN) : [];
-    const l = longN ? smaSeries(closes, longN) : [];
+    // Sitzungsfilter (PAPER): Durchschnitte erst ab Eröffnung der laufenden Sitzung.
+    const sessionOpen = res.strategy?.session_open ? new Date(res.strategy.session_open).getTime() : null;
+    let start = 0;
+    if (res.strategy?.session_filter) {
+      start = sessionOpen === null ? closes.length : res.bars.findIndex((b) => new Date(b.t).getTime() >= sessionOpen);
+      if (start < 0) start = closes.length;
+    }
+    const s = shortN ? smaSeries(closes, shortN, start) : [];
+    const l = longN ? smaSeries(closes, longN, start) : [];
     const all = [...res.bars.map((b) => b.l), ...res.bars.map((b) => b.h)];
     let min = Math.min(...all);
     let max = Math.max(...all);
@@ -82,6 +91,7 @@ export function PriceChart({ mode, defaultSymbol }: { mode: Mode; defaultSymbol:
       xTicks: xTicks.map((i) => ({ x: x(i), label: timeOnly(res.bars[i].t) })),
       shortN,
       longN,
+      sessionStartX: res.strategy?.session_filter && start > 0 && start < n ? x(start) : null,
     };
   }, [res]);
 
@@ -147,6 +157,13 @@ export function PriceChart({ mode, defaultSymbol }: { mode: Mode; defaultSymbol:
               {t.label}
             </text>
           ))}
+          {chart.sessionStartX !== null && (
+            <g>
+              <line x1={chart.sessionStartX} x2={chart.sessionStartX} y1={PAD.t} y2={H - PAD.b}
+                    stroke="var(--faint)" strokeDasharray="4 4" />
+              <text className="axis-label" x={chart.sessionStartX + 4} y={PAD.t + 12}>Sitzungsbeginn</text>
+            </g>
+          )}
           <path d={chart.close} fill="none" stroke="var(--text)" strokeWidth={1.4} vectorEffect="non-scaling-stroke" />
           {chart.long && (
             <path d={chart.long} fill="none" stroke="var(--paper)" strokeWidth={1.6} vectorEffect="non-scaling-stroke" />
@@ -164,6 +181,9 @@ export function PriceChart({ mode, defaultSymbol }: { mode: Mode; defaultSymbol:
             {chart?.shortN && <span><i style={{ background: "var(--accent)" }} />SMA {chart.shortN}</span>}
             {chart?.longN && <span><i style={{ background: "var(--paper)" }} />SMA {chart.longN}</span>}
             <span>Achse: {localTz}</span>
+            {res.strategy?.session_filter && (
+              <span>SMA nur aus Kerzen der laufenden Sitzung (wie der Bot)</span>
+            )}
           </div>
           <div className="small muted">
             Quelle: {res.source}. Letzte Kerze: {dateTime(res.last_bar_at)} · abgerufen {ago(res.fetched_at)}

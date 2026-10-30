@@ -11,7 +11,7 @@ from app.bot import BotStartError
 from app.broker.base import Bar
 from app.core import AppContext
 from app.settings_store import BotParams, set_bot_params
-from app.strategy import complete_bars, evaluate
+from app.strategy import complete_bars, evaluate, session_bars
 
 T = datetime(2026, 10, 30, 14, 0, tzinfo=timezone.utc)
 
@@ -201,3 +201,68 @@ async def test_demo_bot_runs_without_alpaca(ctx: AppContext, fake, clock):
     assert any(d["action"] == "order" for d in decisions)
     assert fake.calls == []  # DEMO berührt Alpaca nie
     await ctx.bot.pause()
+
+
+# ------------------------------------------------------- Sitzungsfilter
+def test_session_bars_drop_previous_day():
+    session_open = T + timedelta(minutes=3)
+    bars = mk([1.0, 2.0, 3.0, 4.0, 5.0])
+    assert [b.c for b in session_bars(bars, session_open)] == [4.0, 5.0]
+    assert session_bars(bars, None) == bars  # DEMO: kein Filter
+
+
+async def test_calendar_session_open_converted_to_utc(paper_broker, fake, clock):
+    opened = await paper_broker.get_session_open(clock())
+    assert opened == datetime(2026, 10, 30, 13, 30, tzinfo=timezone.utc)  # 09:30 EDT
+    await paper_broker.get_session_open(clock())
+    assert fake.count("GET", "/v2/calendar") == 1  # pro Tag zwischengespeichert
+    # Nach Ende der Sommerzeit in New York (1.11.2026): 09:30 EST = 14:30 UTC
+    later = await paper_broker.get_session_open(datetime(2026, 11, 2, 16, 0, tzinfo=timezone.utc))
+    assert later == datetime(2026, 11, 2, 14, 30, tzinfo=timezone.utc)
+
+
+async def test_overnight_gap_does_not_trigger_signal(paper_ctx: AppContext, fake, clock):
+    """Kurz nach Eröffnung: Vortageskerzen bleiben draussen, eine Kurslücke löst kein Signal aus."""
+    from datetime import datetime as dt
+
+    set_bot_params(paper_ctx.db, "PAPER", BotParams(symbol="SPY", short_window=2, long_window=4, order_value=5))
+    # 13:33 UTC = 09:33 New York → erst 3 Kerzen der laufenden Sitzung
+    clock.t = dt(2026, 10, 30, 13, 33, 5, tzinfo=timezone.utc)
+    # Vor Eröffnung leichter Abwärtstrend, heute Kurslücke nach oben: ohne Filter wäre das ein Kaufsignal
+    before_open = [11.0, 10.8, 10.6, 10.4, 10.2]
+    fake.make_bars("SPY", before_open + [12.0] * 3)
+    paper_ctx.market.clear()
+    await paper_ctx.bot.start("PAPER")
+    clock.advance(minutes=1)
+    fake.make_bars("SPY", before_open + [12.0] * 4)
+    paper_ctx.market.clear()
+    await paper_ctx.bot.tick("PAPER")
+    d = paper_ctx.db.list_decisions("PAPER")[0]
+    assert d["signal"] == "none" and "laufenden Sitzung" in d["reason"]
+    assert fake.count("POST", "/v2/orders") == 0
+    # Gegenprobe ohne Filter: dieselben Kerzen hätten ein Kaufsignal ergeben
+    from app.broker.base import Bar
+
+    unfiltered = [Bar(t=T + timedelta(minutes=i), o=c, h=c, l=c, c=c) for i, c in enumerate(before_open + [12.0])]
+    assert evaluate(unfiltered, 2, 4).kind == "buy"
+    await paper_ctx.bot.pause()
+
+
+async def test_bot_start_refused_on_holiday(paper_ctx: AppContext, fake):
+    set_bot_params(paper_ctx.db, "PAPER", BotParams(symbol="SPY", short_window=2, long_window=4, order_value=5))
+    setup_signal(fake, [10.0] * 10)
+    fake.holidays.add("2026-10-30")
+    with pytest.raises(BotStartError, match="keine reguläre Sitzung"):
+        await paper_ctx.bot.start("PAPER")
+
+
+@pytest.mark.parametrize("raw,ok", [("09:30", True), ("0930", True), ("09:30:00", True), ("bald", False)])
+async def test_calendar_open_formats(paper_broker, fake, clock, raw, ok):
+    from app.broker.base import BrokerError
+
+    fake.session_open_time = raw
+    if ok:
+        assert await paper_broker.get_session_open(clock()) == datetime(2026, 10, 30, 13, 30, tzinfo=timezone.utc)
+    else:
+        with pytest.raises(BrokerError):
+            await paper_broker.get_session_open(clock())

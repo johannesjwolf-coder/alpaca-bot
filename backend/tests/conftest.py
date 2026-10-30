@@ -66,6 +66,8 @@ class FakeAlpaca:
         self.prices = {"SPY": 10.0, "BRK.A": 600000.0}
         self.bars: dict[str, list[dict]] = {}
         self.calls: list[tuple[str, str, dict]] = []
+        self.session_open_time = "09:30"  # Ortszeit New York
+        self.holidays: set[str] = set()
         # Fehler-Injektion: Schlüssel (METHODE, Pfad) -> Liste von Aktionen (pro Aufruf eine)
         self.inject: dict[tuple[str, str], list] = {}
 
@@ -140,6 +142,12 @@ class FakeAlpaca:
         if path == "/v2/clock":
             return httpx.Response(200, json={"timestamp": self.clock().isoformat(), "is_open": self.is_open,
                                              "next_open": "2026-11-02T14:30:00Z", "next_close": "2026-10-30T20:00:00Z"})
+        if path == "/v2/calendar":
+            self.calls_calendar = getattr(self, "calls_calendar", 0) + 1
+            day = q["start"][0]
+            if day in self.holidays:
+                return httpx.Response(200, json=[])
+            return httpx.Response(200, json=[{"date": day, "open": self.session_open_time, "close": "16:00"}])
         if path == "/v2/positions":
             return httpx.Response(200, json=self.positions)
         if path.startswith("/v2/assets/"):

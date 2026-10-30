@@ -169,6 +169,8 @@ class Broker(ABC):
     mode: str
     data_source_label: str
     data_feed: str
+    # True: echte Börsensitzungen (Strategie nutzt nur Kerzen der laufenden Sitzung).
+    uses_sessions: bool = False
 
     @abstractmethod
     async def get_account(self) -> Account: ...
@@ -204,6 +206,10 @@ class Broker(ABC):
 
     @abstractmethod
     async def get_latest_price(self, symbol: str) -> LatestPrice | None: ...
+
+    async def get_session_open(self, now: datetime) -> datetime | None:
+        """Beginn der regulären Handelssitzung am Handelstag von ``now`` (UTC) oder None."""
+        return None
 
     async def aclose(self) -> None:  # pragma: no cover - optional
         return None

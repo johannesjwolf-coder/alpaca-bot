@@ -17,7 +17,7 @@ import asyncio
 import logging
 import os
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
 
@@ -30,6 +30,7 @@ from ..config import (
     PAPER_TRADING_HOST,
     auth_mode_from_env,
 )
+from ..timeutil import NEW_YORK
 from .base import (
     SYMBOL_RE,
     UUID_RE,
@@ -286,6 +287,7 @@ def parse_position(d: dict) -> Position:
 # --------------------------------------------------------------------------- #
 class AlpacaPaperBroker(Broker):
     mode = "PAPER"
+    uses_sessions = True
     data_feed = DATA_FEED
     data_source_label = "Alpaca Market Data, IEX-Feed (kostenlos; nur Handelsplatz IEX, Teilabdeckung des Marktes)"
 
@@ -298,6 +300,7 @@ class AlpacaPaperBroker(Broker):
     ) -> None:
         self.auth = auth or auth_from_env()
         self._backoff_base_s = backoff_base_s
+        self._session_cache: dict[str, datetime | None] = {}
         kwargs: dict[str, Any] = {}
         if transport is not None:  # nur für Tests (Mock-Transport, kein Netzwerk)
             kwargs["transport"] = transport
@@ -453,6 +456,23 @@ class AlpacaPaperBroker(Broker):
             next_open=_dt(d.get("next_open")),
             next_close=_dt(d.get("next_close")),
         )
+
+    async def get_session_open(self, now: datetime) -> datetime | None:
+        """Regulärer Sitzungsbeginn laut Handelskalender (berücksichtigt Feiertage und verkürzte Tage)."""
+        day = now.astimezone(NEW_YORK).date()
+        key = day.isoformat()
+        if key not in self._session_cache:
+            data = await self._request("GET", "trading", "/v2/calendar", params={"start": key, "end": key})
+            entry = next((d for d in (data or []) if d.get("date") == key), None)
+            opened = None
+            if entry and entry.get("open"):
+                digits = "".join(ch for ch in str(entry["open"]) if ch.isdigit())
+                if len(digits) < 4:
+                    raise BrokerError("invalid_response", f"Unerwartetes Kalenderformat: {str(entry['open'])[:20]!r}")
+                hh, mm = int(digits[:2]), int(digits[2:4])
+                opened = datetime.combine(day, time(hh, mm), tzinfo=NEW_YORK).astimezone(timezone.utc)
+            self._session_cache = {key: opened}  # nur der aktuelle Tag wird gehalten
+        return self._session_cache[key]
 
     async def get_asset(self, symbol: str) -> Asset:
         d = await self._request("GET", "trading", f"/v2/assets/{_check_symbol(symbol)}")

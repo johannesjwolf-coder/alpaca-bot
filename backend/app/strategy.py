@@ -31,6 +31,17 @@ def complete_bars(bars: list[Bar], now: datetime) -> list[Bar]:
     return [b for b in sorted(bars, key=lambda x: x.t) if b.t + BAR_LENGTH <= now - COMPLETION_GRACE]
 
 
+def session_bars(bars: list[Bar], session_open: datetime | None) -> list[Bar]:
+    """Nur Kerzen ab Beginn der laufenden Handelssitzung (None = kein Filter, z. B. DEMO).
+
+    Verhindert, dass der lange Durchschnitt kurz nach Eröffnung noch Kerzen vom
+    Vortag enthält und eine Kurslücke über Nacht als Kreuzen gewertet wird.
+    """
+    if session_open is None:
+        return bars
+    return [b for b in bars if b.t >= session_open]
+
+
 def sma(values: list[float], n: int) -> float:
     return sum(values[-n:]) / n
 

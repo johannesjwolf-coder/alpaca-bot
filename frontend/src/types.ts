@@ -150,7 +150,7 @@ export interface BarsResponse {
   error: BrokerErrorInfo | null;
   market_open: boolean | null;
   age_s?: number | null;
-  strategy?: { short_window: number; long_window: number };
+  strategy?: { short_window: number; long_window: number; session_open: string | null; session_filter: boolean };
 }
 
 export interface Check {

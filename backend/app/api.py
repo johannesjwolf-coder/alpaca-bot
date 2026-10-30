@@ -195,7 +195,18 @@ async def bars(request: Request, symbol: str = Query("SPY", max_length=10)) -> d
     params = get_bot_params(ctx.db, ctx.mode)
     res = await ctx.market.bars(rt, symbol, limit=240, max_age_s=params.max_bar_age_s)
     if symbol.strip().upper() == params.symbol:
-        res["strategy"] = {"short_window": params.short_window, "long_window": params.long_window}
+        session_open = None
+        if rt.broker.uses_sessions:
+            try:
+                session_open = iso(await rt.broker.get_session_open(rt._now()))
+            except BrokerError:
+                session_open = None
+        res["strategy"] = {
+            "short_window": params.short_window,
+            "long_window": params.long_window,
+            "session_open": session_open,
+            "session_filter": rt.broker.uses_sessions,
+        }
     return res
 
 

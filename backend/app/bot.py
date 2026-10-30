@@ -24,7 +24,7 @@ from .db import iso, parse_iso
 from .orders import OrderBlocked, OrderFailed, OrderInput
 from .risk import available_to_sell
 from .settings_store import BotParams, get_bot_params
-from .strategy import BAR_LENGTH, complete_bars, evaluate
+from .strategy import BAR_LENGTH, complete_bars, evaluate, session_bars
 
 if TYPE_CHECKING:  # pragma: no cover
     from .core import AppContext
@@ -115,6 +115,12 @@ class BotEngine:
                     f"Daten nicht frisch: letzte abgeschlossene Kerze vor {age / 60:.1f} Min. "
                     f"(erlaubt {params.max_bar_age_s / 60:.0f} Min.)."
                 )
+            if rt.broker.uses_sessions:
+                try:
+                    if await rt.broker.get_session_open(now) is None:
+                        raise BotStartError("Heute findet laut Handelskalender keine reguläre Sitzung statt.")
+                except BrokerError as exc:
+                    raise BotStartError(f"Handelskalender nicht verfügbar: {exc.message}") from exc
             # Kerzen vor dem Start lösen keine Signale aus.
             ctx.db.set(mode, self._last_processed_key(params.symbol), iso(done[-1].t))
             self.mode = mode
@@ -198,6 +204,16 @@ class BotEngine:
         if not done:
             self._status(mode, "Keine abgeschlossenen Kerzen")
             return
+        session_open = None
+        if rt.broker.uses_sessions:
+            try:
+                session_open = await rt.broker.get_session_open(now)
+            except BrokerError as exc:
+                self._status(mode, f"Handelskalender nicht verfügbar: {exc.message} – keine neuen Aufträge", "warning")
+                return
+            if session_open is None:
+                self._status(mode, "Heute keine reguläre Handelssitzung – keine neuen Aufträge")
+                return
         latest = done[-1]
         key = self._last_processed_key(params.symbol)
         last_processed = parse_iso(ctx.db.get(mode, key))
@@ -214,7 +230,23 @@ class BotEngine:
                 action="skip", reason=f"Daten veraltet ({age / 60:.1f} Min.) – keine Entscheidung",
             )
             return
-        sig = evaluate(done, params.short_window, params.long_window)
+        bars_in_session = session_bars(done, session_open)
+        if not bars_in_session or bars_in_session[-1].t != latest.t:
+            ctx.db.add_decision(
+                mode, symbol=params.symbol, bar_time=iso(latest.t), close=latest.c, signal="none",
+                action="skip", reason="Kerze liegt ausserhalb der regulären Handelssitzung – keine Entscheidung",
+            )
+            return
+        needed = params.long_window + 1
+        if session_open is not None and len(bars_in_session) < needed:
+            ctx.db.add_decision(
+                mode, symbol=params.symbol, bar_time=iso(latest.t), close=latest.c, signal="none",
+                action="none",
+                reason=f"Zu wenige Kerzen der laufenden Sitzung ({len(bars_in_session)}/{needed}) – "
+                "Kerzen vom Vortag werden bewusst nicht verwendet",
+            )
+            return
+        sig = evaluate(bars_in_session, params.short_window, params.long_window)
         base = dict(
             symbol=params.symbol,
             bar_time=iso(latest.t),
