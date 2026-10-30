@@ -107,7 +107,7 @@ ok ".env vorbereitet ($ENV_FILE, Rechte 600)"
 
 # ------------------------------------------------------------------ Start
 info "Anwendung bauen und starten (dauert beim ersten Mal einige Minuten) …"
-"${COMPOSE[@]}" up -d --build
+"${COMPOSE[@]}" up -d --build --force-recreate # übernimmt geänderte .env-Werte sicher
 health || die "Anwendung antwortet nicht. Protokoll: docker compose -f $APP_DIR/docker-compose.yml logs --tail=100"
 ok "Anwendung läuft auf 127.0.0.1:8000 (vom Internet nicht erreichbar)"
 
@@ -121,6 +121,9 @@ fi
 info "HTTPS im Tailnet einrichten (tailscale serve) …"
 # Falls HTTPS-Zertifikate im Tailnet noch aus sind, zeigt Tailscale hier einen Link zum Einschalten.
 tailscale serve --bg --https=443 http://127.0.0.1:8000
+# Prüft, ob die App die Tailscale-Adresse annimmt (sonst „Invalid host header“ im Browser).
+code="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: $TS_NAME" http://127.0.0.1:8000/api/status || true)"
+[[ "$code" == 200 ]] || die "Die App lehnt die Adresse $TS_NAME ab (HTTP $code). Bitte melden."
 ok "Erreichbar unter https://$TS_NAME (nur Geräte in Ihrem Tailnet)"
 
 # ------------------------------------------------------------------ Backup

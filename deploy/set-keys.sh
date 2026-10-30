@@ -8,6 +8,11 @@ APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$APP_DIR/deploy/common.sh"
 require_root
 [[ -f "$ENV_FILE" ]] || die "$ENV_FILE fehlt – zuerst deploy/install.sh ausführen."
+if [[ -z "$(get_env APP_ALLOWED_HOSTS)" ]]; then
+  warn "Die Installation ist nicht abgeschlossen (Adresse, Push-Nachrichten und Backup fehlen)."
+  warn "Bitte stattdessen ausführen: bash $APP_DIR/deploy/install.sh  – es fragt die Schlüssel mit ab."
+  exit 1
+fi
 
 read -rsp "API Key ID (Paper): " key_id
 echo
