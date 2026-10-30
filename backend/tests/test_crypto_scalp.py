@@ -15,7 +15,7 @@ from app.core import AppContext
 from app.orders import OrderInput
 from app.settings_store import BotParams, RiskLimits, set_bot_params, set_risk_limits
 
-SCALP = dict(strategy="scalp", symbol="BTC/USD", symbols=["BTC/USD"], short_window=2, long_window=4, bar_seconds=5,
+SCALP = dict(strategy="scalp", trend_filter=False, symbol="BTC/USD", symbols=["BTC/USD"], short_window=2, long_window=4, bar_seconds=5,
              poll_interval_s=1, order_value=20, stop_loss_pct=0.5, take_profit_pct=1.0, max_hold_min=1, fee_pct=0.25,
              broker_stop=False)
 
@@ -123,9 +123,9 @@ async def feed(ctx: AppContext, fake, clock, mids: list[float], spread: float = 
         await ctx.bot.tick("PAPER")
 
 
-async def test_scalp_start_requires_crypto_and_fresh_quote(paper_ctx: AppContext, fake, clock):
+async def test_scalp_start_requires_fresh_quote(paper_ctx: AppContext, fake, clock):
     with pytest.raises(ValueError):
-        BotParams(**{**SCALP, "symbol": "SPY", "symbols": ["SPY"]})
+        BotParams(**{**SCALP, "strategy": "sma"})  # SMA-Minutenstrategie bleibt Aktien vorbehalten
     set_bot_params(paper_ctx.db, "PAPER", BotParams(**SCALP))
     fake.set_quote("BTC/USD", 99.99, 100.01, at=clock() - timedelta(minutes=5))
     with pytest.raises(BotStartError, match="Kein frischer"):

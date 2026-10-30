@@ -31,11 +31,12 @@ export function BotCard({ status, onChange, onNavigate }: { status: Status; onCh
       body: (
         <dl className="kv">
           <dt>Modus</dt><dd><strong>{status.mode}</strong></dd>
-          <dt>Strategie</dt><dd>{params.strategy === "scalp" ? "Scalping Krypto" : "SMA Aktien (Minuten)"}</dd>
+          <dt>Strategie</dt><dd>{params.strategy === "scalp" ? "Scalping" : "SMA Aktien (Minuten)"}</dd>
           <dt>{params.strategy === "scalp" ? "Symbole" : "Symbol"}</dt><dd>{params.strategy === "scalp" ? params.symbols.join(", ") : params.symbol}</dd>
           <dt>Einsatz je Trade</dt><dd>{money(params.order_value, "USD")}{params.strategy === "scalp" && params.symbols.length > 1 ? " je Symbol" : ""}</dd>
-          {params.strategy === "scalp" && <><dt>Stop-Loss / Ziel</dt><dd>−{params.stop_loss_pct} % / +{params.take_profit_pct} %</dd></>}
-          {params.strategy === "scalp" && <><dt>Schutzorder</dt><dd>{params.broker_stop ? "Stop-Limit beim Broker" : "aus"}</dd></>}
+          {params.strategy === "scalp" && params.symbols.some((s) => s.includes("/")) && <><dt>Krypto SL / Ziel</dt><dd>−{params.stop_loss_pct} % / +{params.take_profit_pct} % · Schutzorder {params.broker_stop ? "beim Broker" : "aus"}</dd></>}
+          {params.strategy === "scalp" && params.symbols.some((s) => !s.includes("/")) && <><dt>ETFs SL / Ziel</dt><dd>−{params.stock_stop_loss_pct} % / +{params.stock_take_profit_pct} % · nur US-Handelszeit</dd></>}
+          {params.strategy === "scalp" && <><dt>Trendfilter</dt><dd>{params.trend_filter ? `an (${params.trend_minutes} Min.)` : "aus"}</dd></>}
         </dl>
       ),
     });
@@ -67,7 +68,7 @@ export function BotCard({ status, onChange, onNavigate }: { status: Status; onCh
       <div className="card-body stack">
         {params ? (
           <dl className="kv">
-            <dt>Strategie</dt><dd>{params.strategy === "scalp" ? "Scalping Krypto" : "SMA Aktien (Minuten)"}</dd>
+            <dt>Strategie</dt><dd>{params.strategy === "scalp" ? "Scalping" : "SMA Aktien (Minuten)"}</dd>
             <dt>{scalp ? "Symbole" : "Symbol"}</dt><dd className="sym">{scalp ? params.symbols.join(", ") : params.symbol}</dd>
             {running && <><dt>Status</dt><dd>{live?.status || status.bot.last_status || "—"}</dd></>}
             {summary && (

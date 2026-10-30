@@ -7,12 +7,23 @@ import { SymbolPicker } from "../components/SymbolPicker";
 import { Card, EmptyState, Icon, Kpi, Notice, Seg, Spinner, Tag } from "../components/ui";
 import { amount2, dateTime, localTz, money, num, pct, price, shortDT, signedMoney, tone } from "../format";
 import { usePoll } from "../hooks";
-import type { BacktestRequest, BacktestResult, BacktestRun, Status } from "../types";
+import type { BacktestRequest, BacktestResult, BacktestRun, BotParams, Status } from "../types";
 
 const DEFAULT: BacktestRequest = {
   symbol: "BTC/USD", strategy: "scalp", days: 3, short_window: 1, long_window: 3, order_value: 50,
   stop_loss_pct: 0.3, take_profit_pct: 0.6, max_hold_min: 10, fee_pct: 0.25, spread_pct: 0.05, apply_risk_limits: true,
+  trend_filter: true, trend_minutes: 30,
 };
+
+/** Ausstiegs- und Kostenwerte je Anlageklasse – aus den Bot-Parametern, sonst Standardwerte. */
+function classValues(symbol: string, p: BotParams | undefined) {
+  if (symbol.includes("/")) {
+    return { stop_loss_pct: p?.stop_loss_pct ?? 0.3, take_profit_pct: p?.take_profit_pct ?? 0.6,
+             max_hold_min: p?.max_hold_min ?? 10, fee_pct: p?.fee_pct ?? 0.25, spread_pct: 0.05 };
+  }
+  return { stop_loss_pct: p?.stock_stop_loss_pct ?? 0.15, take_profit_pct: p?.stock_take_profit_pct ?? 0.25,
+           max_hold_min: p?.stock_max_hold_min ?? 30, fee_pct: p?.stock_fee_pct ?? 0, spread_pct: 0.02 };
+}
 type NumKey = "short_window" | "long_window" | "order_value" | "stop_loss_pct" | "take_profit_pct" | "max_hold_min" | "fee_pct" | "spread_pct";
 const FIELDS: [NumKey, string, string, boolean][] = [
   ["short_window", "Kurzer Ø (Minuten)", "1", true],
@@ -28,7 +39,6 @@ const FIELDS: [NumKey, string, string, boolean][] = [
 function validate(r: BacktestRequest): Partial<Record<keyof BacktestRequest, string>> {
   const e: Partial<Record<keyof BacktestRequest, string>> = {};
   const crypto = r.symbol.includes("/");
-  if (r.strategy === "scalp" && !crypto) e.symbol = "Scalping ist für Krypto vorgesehen (z. B. BTC/USD).";
   if (r.strategy === "sma" && crypto) e.symbol = "Die SMA-Strategie ist für US-Aktien/ETFs vorgesehen.";
   if (!(r.short_window >= 1)) e.short_window = "Mindestens 1.";
   if (!(r.long_window > r.short_window)) e.long_window = "Muss grösser als der kurze Ø sein.";
@@ -40,6 +50,7 @@ function validate(r: BacktestRequest): Partial<Record<keyof BacktestRequest, str
   }
   if (!(r.fee_pct >= 0 && r.fee_pct <= 2)) e.fee_pct = "Zwischen 0 und 2 %.";
   if (!(r.spread_pct >= 0 && r.spread_pct <= 5)) e.spread_pct = "Zwischen 0 und 5 %.";
+  if (r.trend_filter && !(r.trend_minutes >= 5 && r.trend_minutes <= 240)) e.trend_minutes = "Zwischen 5 und 240 Minuten.";
   return e;
 }
 
@@ -60,10 +71,11 @@ export function BacktestPage({ status }: { status: Status }) {
     const toMin = (n: number) => Math.max(1, Math.round((n * p.bar_seconds) / 60));
     const short = p.strategy === "scalp" ? toMin(p.short_window) : p.short_window;
     const long = p.strategy === "scalp" ? Math.max(short + 1, toMin(p.long_window)) : p.long_window;
+    const symbol = p.strategy === "scalp" ? (p.symbols[0] ?? p.symbol) : p.symbol;
     setReq((r) => ({
-      ...r, symbol: p.symbol, strategy: p.strategy, short_window: short, long_window: long, order_value: p.order_value,
-      stop_loss_pct: p.stop_loss_pct, take_profit_pct: p.take_profit_pct, max_hold_min: p.max_hold_min, fee_pct: p.fee_pct,
-      spread_pct: p.strategy === "scalp" ? 0.05 : 0.02,
+      ...r, symbol, strategy: p.strategy, short_window: short, long_window: long, order_value: p.order_value,
+      ...classValues(symbol, p), ...(p.strategy === "sma" ? { spread_pct: 0.02 } : {}),
+      trend_filter: p.strategy === "scalp" ? p.trend_filter : false, trend_minutes: p.trend_minutes,
     }));
   }
   // Beim ersten Laden die aktuellen Bot-Parameter übernehmen
@@ -204,13 +216,17 @@ export function BacktestPage({ status }: { status: Status }) {
             <form className="stack" onSubmit={run} noValidate>
               <div className={`field ${errors.symbol ? "invalid" : ""}`}>
                 <span>Symbol</span>
-                <SymbolPicker value={req.symbol} onChange={(s) => setReq((r) => ({ ...r, symbol: s, strategy: s.includes("/") ? "scalp" : "sma", spread_pct: s.includes("/") ? 0.05 : 0.02 }))} mode={mode} label="Symbol für Backtest" />
+                <SymbolPicker value={req.symbol} mode={mode} label="Symbol für Backtest"
+                              onChange={(s) => setReq((r) => ({
+                                ...r, symbol: s, strategy: s.includes("/") ? "scalp" : r.strategy,
+                                ...(s.includes("/") === r.symbol.includes("/") ? {} : classValues(s, bot.data?.params)),
+                              }))} />
                 {errors.symbol && <span className="field-error">{errors.symbol}</span>}
               </div>
               <div className="field">
                 <span>Strategie</span>
                 <Seg label="Strategie" className="block" value={req.strategy} onChange={(v) => set("strategy", v)}
-                     options={[{ id: "scalp", label: "Scalping Krypto" }, { id: "sma", label: "SMA Aktien" }]} />
+                     options={[{ id: "scalp", label: "Scalping (Krypto & ETFs)" }, { id: "sma", label: "SMA Aktien" }]} />
               </div>
               <div className="field">
                 <span>Zeitraum</span>
@@ -226,6 +242,18 @@ export function BacktestPage({ status }: { status: Status }) {
                   </label>
                 ))}
               </div>
+              <label className="check">
+                <input type="checkbox" checked={req.trend_filter} onChange={(e) => set("trend_filter", e.target.checked)} />
+                <span><strong>Trendfilter</strong> – Einstieg nur über einem steigenden Durchschnitt der letzten Minutenkerzen (wie im Bot)</span>
+              </label>
+              {req.trend_filter && (
+                <label className={`field ${errors.trend_minutes ? "invalid" : ""}`}>
+                  <span>Trend über (Minuten)</span>
+                  <input type="number" step="1" min={5} max={240} value={req.trend_minutes} onChange={(e) => set("trend_minutes", Number(e.target.value))}
+                         aria-invalid={!!errors.trend_minutes} />
+                  {errors.trend_minutes && <span className="field-error">{errors.trend_minutes}</span>}
+                </label>
+              )}
               <label className="check">
                 <input type="checkbox" checked={req.apply_risk_limits} onChange={(e) => set("apply_risk_limits", e.target.checked)} />
                 <span>Risikogrenzen des {mode}-Modus nachbilden (Einstiege pro Stunde/Tag, Verlustserie, Tagesverlust)</span>
@@ -248,7 +276,7 @@ export function BacktestPage({ status }: { status: Status }) {
                   <li key={r.id} className={`list-item ${result?.id === r.id ? "selected" : ""}`}>
                     <div>
                       <span className="sym">{r.symbol}</span>{" "}
-                      <span className="meta">{r.request.days} T · Ø {r.request.short_window}/{r.request.long_window}{r.strategy === "scalp" ? ` · SL/TP ${num(r.request.stop_loss_pct, 2)}/${num(r.request.take_profit_pct, 2)} %` : " · SMA"}</span>
+                      <span className="meta">{r.request.days} T · Ø {r.request.short_window}/{r.request.long_window}{r.strategy === "scalp" ? ` · SL/TP ${num(r.request.stop_loss_pct, 2)}/${num(r.request.take_profit_pct, 2)} %` : " · SMA"}{r.request.trend_filter ? " · Trend" : ""}</span>
                       <div className="meta">{shortDT(r.created_at)} · {r.metrics.trades} Trades{r.metrics.win_rate_pct !== null ? ` · ${num(r.metrics.win_rate_pct, 0)} % Treffer` : ""}</div>
                     </div>
                     <div className="val">

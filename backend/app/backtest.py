@@ -13,7 +13,11 @@ Annahmen (bewusst vorsichtig und offen dokumentiert):
   einer Schwelle, gilt der Eröffnungskurs. Werden Stop-Loss und Ziel in derselben
   Kerze berührt, zählt der Stop-Loss (pessimistisch).
 * Aktien: nur reguläre Handelszeit (9:30–16:00 New York); Durchschnitte beginnen
-  jede Sitzung neu – wie beim Live-Bot.
+  jede Sitzung neu – wie beim Live-Bot. Scalping mit Aktien/ETFs: keine Einstiege
+  in den letzten 15 Minuten, Glattstellen 5 Minuten vor Schluss bzw. mit der
+  letzten Kerze des Handelstags (auch an verkürzten Tagen).
+* Trendfilter (optional): Einstieg nur, wenn der Schlusskurs über einem steigenden
+  Durchschnitt der letzten N Minutenkerzen liegt – wie beim Live-Bot.
 * Risikogrenzen des aktiven Modus (Einstiege pro Stunde/Tag, Verlustserien-Pause,
   Tagesverlust, max. Orderwert) werden auf Wunsch nachgebildet.
 Ein Backtest ist keine Vorhersage. Vergangene Ergebnisse garantieren nichts.
@@ -30,8 +34,17 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .broker.base import SYMBOL_RE, Bar, is_crypto
-from .settings_store import RiskLimits
+from .settings_store import FLATTEN_BEFORE_CLOSE_MIN, NO_ENTRY_BEFORE_CLOSE_MIN, RiskLimits
+from .strategy import trend_ok
 from .timeutil import NEW_YORK, trading_day
+
+SESSION_CLOSE_MIN = 16 * 60  # 16:00 New York
+
+
+def minutes_to_close(at: datetime) -> float:
+    """Minuten von ``at`` bis 16:00 New York (reguläre Schlusszeit)."""
+    local = at.astimezone(NEW_YORK)
+    return SESSION_CLOSE_MIN - (local.hour * 60 + local.minute + local.second / 60)
 
 MAX_DISPLAY_BARS = 3000
 MAX_EQUITY_POINTS = 500
@@ -50,6 +63,8 @@ class BacktestRequest(BaseModel):
     fee_pct: float = Field(0.25, ge=0, le=2)
     spread_pct: float = Field(0.05, ge=0, le=5, description="Angenommener Spread")
     apply_risk_limits: bool = True
+    trend_filter: bool = False
+    trend_minutes: int = Field(30, ge=5, le=240)
 
     @field_validator("symbol")
     @classmethod
@@ -63,8 +78,6 @@ class BacktestRequest(BaseModel):
     def _check(self) -> BacktestRequest:
         if self.short_window >= self.long_window:
             raise ValueError("Kurzer Durchschnitt muss kleiner als der lange sein")
-        if self.strategy == "scalp" and not is_crypto(self.symbol):
-            raise ValueError("Scalping-Backtest ist (wie der Live-Bot) für Krypto vorgesehen")
         if self.strategy == "sma" and is_crypto(self.symbol):
             raise ValueError("Die SMA-Minutenstrategie ist für US-Aktien/ETFs vorgesehen")
         return self
@@ -131,6 +144,7 @@ def simulate(bars: list[Bar], req: BacktestRequest, limits: RiskLimits | None, s
     session_day: str | None = None
     equity: list[tuple[datetime, float]] = []
     exposure_bars = 0
+    stock_scalp = req.strategy == "scalp" and not is_crypto(req.symbol)
 
     def close(at: datetime, price: float, reason: str) -> None:
         nonlocal pos
@@ -222,6 +236,12 @@ def simulate(bars: list[Bar], req: BacktestRequest, limits: RiskLimits | None, s
                 close(end, pos.target, "Take-Profit")
             elif end >= pos.deadline:
                 close(end, bc, "Max. Haltedauer")
+            elif stock_scalp and (
+                minutes_to_close(end) <= FLATTEN_BEFORE_CLOSE_MIN
+                or i == len(bars) - 1
+                or trading_day(bars[i + 1].t) != day
+            ):
+                close(end, bc, "Börsenschluss")
 
         # 3) Bewertung (realisiert + offene Position zum Geldkurs, abzüglich Einstiegsgebühr)
         unrealized = 0.0
@@ -250,7 +270,14 @@ def simulate(bars: list[Bar], req: BacktestRequest, limits: RiskLimits | None, s
         if i == len(bars) - 1:
             break  # keine nächste Kerze zur Ausführung
         if cross_up and pos is None:
-            why = entry_allowed(bars[i + 1].t)
+            nxt = bars[i + 1].t
+            why = entry_allowed(nxt)
+            if why is None and stock_scalp and (
+                trading_day(nxt) != day or minutes_to_close(nxt) <= NO_ENTRY_BEFORE_CLOSE_MIN
+            ):
+                why = "Kurz vor Börsenschluss"
+            if why is None and req.trend_filter and not trend_ok(closes, req.trend_minutes, b.c)[0]:
+                why = "Trendfilter"
             if why:
                 sim.blocked[why] += 1
             else:
@@ -321,7 +348,8 @@ ASSUMPTIONS = [
     "Signal beim Kerzenschluss, Ausführung zum Eröffnungskurs der nächsten Kerze.",
     "Kauf zum Kurs + halber Spread, Verkauf zum Kurs − halber Spread; Gebühr je Ausführung.",
     "Berühren Stop-Loss und Ziel dieselbe Kerze, zählt der Stop-Loss (pessimistisch).",
-    "Aktien: nur reguläre Handelszeit, Durchschnitte je Sitzung neu.",
+    "Aktien: nur reguläre Handelszeit, Durchschnitte je Sitzung neu; Scalping glattgestellt vor Börsenschluss.",
+    "Trendfilter (wenn gewählt): Schlusskurs über steigendem Durchschnitt der letzten N Minutenkerzen.",
     "Vergangene Ergebnisse sind keine Vorhersage.",
 ]
 

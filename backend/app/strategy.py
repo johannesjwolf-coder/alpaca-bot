@@ -74,3 +74,28 @@ def evaluate(bars: list[Bar], short: int, long: int) -> Signal:
         return Signal("sell", last.t, last.c, s_short, s_long, f"SMA{short} kreuzt SMA{long} von oben")
     side = "über" if cur > 0 else ("unter" if cur < 0 else "gleich")
     return Signal("none", last.t, last.c, s_short, s_long, f"Kein Kreuzen (SMA{short} {side} SMA{long})")
+
+
+TREND_SLOPE_BARS = 5  # Steigung: Durchschnitt jetzt gegenüber vor 5 Minuten
+
+
+def _px(value: float) -> str:
+    return f"{value:.2f}" if value >= 1 else f"{value:.6f}"
+
+
+def trend_ok(closes: list[float], minutes: int, price: float) -> tuple[bool, str]:
+    """Trendfilter: Einstieg nur, wenn der Kurs über einem steigenden Durchschnitt der Minutenkerzen liegt.
+
+    ``closes``: Schlusskurse abgeschlossener 1-Minuten-Kerzen (älteste zuerst). Bei zu wenigen
+    Kerzen gibt es keinen Einstieg – lieber ein Signal auslassen als blind kaufen.
+    """
+    need = minutes + TREND_SLOPE_BARS
+    if len(closes) < need:
+        return False, f"zu wenige Minutenkerzen für den Trend ({len(closes)}/{need})"
+    now_avg = sum(closes[-minutes:]) / minutes
+    before = sum(closes[-minutes - TREND_SLOPE_BARS : -TREND_SLOPE_BARS]) / minutes
+    if price <= now_avg:
+        return False, f"Kurs {_px(price)} nicht über dem {minutes}-Min.-Durchschnitt {_px(now_avg)}"
+    if now_avg < before:
+        return False, f"{minutes}-Min.-Durchschnitt fällt ({_px(before)} → {_px(now_avg)})"
+    return True, f"Trend aufwärts (Kurs über steigendem {minutes}-Min.-Durchschnitt {_px(now_avg)})"

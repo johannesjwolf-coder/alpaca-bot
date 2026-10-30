@@ -6,7 +6,7 @@ Privater Trading-Bot mit Weboberfläche für das **Alpaca-Paper-Konto** (Spielge
 * **Zwei ausdrücklich gewählte Betriebsarten:** `DEMO` (lokale, reproduzierbare Beispieldaten, simulierte Orders, kein Alpaca-Zugriff) und `PAPER` (Ihr echtes Alpaca-Paper-Konto). Die Anwendung startet immer in `DEMO`, mit pausiertem Bot und gesperrter Paper-Orderfreigabe.
 * **Keine Zugangsdaten im Frontend.** Nur das Backend authentifiziert sich bei Alpaca.
 * **Backtest** auf historischen 1-Minuten-Kerzen mit Kennzahlen, Equity-Kurve und gespeicherten Läufen zum Vergleichen (Stufe 2).
-* **Zwei Teststrategien:** Scalping für Krypto (Standard: `BTC/USD`, `ETH/USD`, `SOL/USD` parallel) und eine Minutenstrategie für US-Aktien/ETFs. Beide dienen **nur zum Prüfen der Automatik**. Sie sind weder validiert noch auf Gewinn ausgelegt und keine Anlageempfehlung.
+* **Zwei Teststrategien:** Scalping für Krypto und US-ETFs/Aktien (z. B. `SPY`, `QQQ` tagsüber, `BTC/USD`, `ETH/USD`, `SOL/USD` nachts, bis zu 5 parallel, mit Trendfilter) und eine Minutenstrategie für US-Aktien/ETFs. Beide dienen **nur zum Prüfen der Automatik**. Sie sind weder validiert noch auf Gewinn ausgelegt und keine Anlageempfehlung.
 * **Serverbetrieb (Stufe 3):** rund um die Uhr auf einem eigenen Linux-Server. Die Oberfläche ist nur über Tailscale erreichbar, Push-Nachrichten kommen über ntfy, nach jedem Kauf setzt der Bot eine Schutzorder (Stop-Limit) beim Broker. Optional setzt er die Automatik nach einem Neustart fort. Anleitung: **[docs/SERVER.md](docs/SERVER.md)**.
 
 ![Übersicht im DEMO-Modus](docs/screenshots/01-uebersicht.png)
@@ -144,7 +144,7 @@ Nach dem Start (siehe unten) `http://127.0.0.1:8000` öffnen. Oben rechts steht 
 ### 4. Automatik ausdrücklich starten
 *Bot*: Strategie wählen und Parameter prüfen → **Start**.
 
-* **Scalping Krypto** (Standard: `BTC/USD`, `ETH/USD`, `SOL/USD`, bis zu 5 Paare): handelt rund um die Uhr. Start nur bei gültiger Konfiguration, erfolgreichem Kontoabgleich, aktivem Brokerstatus, handelbaren Krypto-Instrumenten, frischen Kursen (≤ 15 s) für **alle** Symbole und (PAPER) aktiver Orderfreigabe. Danach sammelt der Bot rund 3 Minuten Mikrokerzen, bevor er einsteigen kann.
+* **Scalping (Krypto & ETFs)** (Standard: `BTC/USD`, `ETH/USD`, `SOL/USD`; ETFs wie `SPY`, `QQQ` per „+ SPY“ hinzufügen, bis zu 5 Symbole): Krypto rund um die Uhr, ETFs/Aktien nur in der US-Handelszeit. Start nur bei gültiger Konfiguration, erfolgreichem Kontoabgleich, aktivem Brokerstatus, handelbaren Instrumenten (ETFs/Aktien bruchstückfähig), frischen Kursen (≤ 15 s) für alle gerade handelbaren Symbole und (PAPER) aktiver Orderfreigabe. Danach sammelt der Bot rund 3 Minuten Mikrokerzen, bevor er einsteigen kann.
 * **SMA Aktien (Minuten)**: Start zusätzlich nur bei geöffneter US-Börse, regulärer Handelssitzung und frischer Minutenkerze.
 
 **Pause** stoppt alle *neuen automatischen* Aufträge – beim Scalping also auch Take-Profit und Haltedauer. Offene Positionen bleiben bestehen, bereits gesendete Broker-Orders bleiben aktiv, darunter die **Schutzorder** (Stop-Limit), die den Stop-Loss auch bei pausiertem Bot absichert. **Stornieren**, **Position schliessen…** und **Not-Aus** sind separate, ausdrücklich ausgelöste Aktionen.
@@ -162,14 +162,15 @@ Nach dem Start (siehe unten) `http://127.0.0.1:8000` öffnen. Oben rechts steht 
 
 ### Backtest
 
-Seite *Backtest*: Symbol und Strategie wählen, Zeitraum (1, 3, 7 oder 14 Tage) und Parameter prüfen – „Aus Bot übernehmen“ setzt die aktuellen Bot-Parameter ein – und **Backtest starten**. Es werden **keine Orders** gesendet, nur Marktdaten gelesen (DEMO: synthetische Daten).
+Seite *Backtest*: Symbol und Strategie wählen, Zeitraum (1, 3, 7 oder 14 Tage) und Parameter prüfen – „Aus Bot übernehmen“ setzt die aktuellen Bot-Parameter ein, beim Wechsel zwischen Krypto und ETF die passenden Werte der Anlageklasse (z. B. Gebühr 0 für ETFs) – und **Backtest starten**. Scalping lässt sich auch für ETFs/Aktien testen, wahlweise mit **Trendfilter**. Es werden **keine Orders** gesendet, nur Marktdaten gelesen (DEMO: synthetische Daten).
 
 Ergebnis: Netto-Ergebnis nach Kosten, Trefferquote, Profit-Faktor, maximaler Drawdown, Vergleich mit Kaufen-und-Halten, Chart mit allen Ein- und Ausstiegen, Equity-Kurve, Ausstiegsgründe, durch Risikogrenzen gesperrte Einstiege und eine Trade-Liste. Die letzten 30 Läufe je Modus bleiben gespeichert und lassen sich unter *Gespeicherte Läufe* wieder öffnen und vergleichen.
 
 Annahmen (auch auf der Seite angezeigt):
 * Historisch liefert Alpaca 1-Minuten-Kerzen; der Live-Scalper nutzt 10-Sekunden-Mikrokerzen. „Aus Bot übernehmen“ rechnet die Durchschnittslängen in Minuten um (z. B. 6/18 Mikrokerzen à 10 s → 1/3 Minuten).
 * Signal beim Kerzenschluss, Ausführung zum Eröffnungskurs der nächsten Kerze; Kauf zum Kurs + halber angenommener Spread, Verkauf zum Kurs − halber Spread; Gebühr je Ausführung.
-* Berühren Stop-Loss und Ziel dieselbe Kerze, zählt der Stop-Loss (pessimistisch). Aktien nur zur regulären Handelszeit, Durchschnitte je Sitzung neu.
+* Berühren Stop-Loss und Ziel dieselbe Kerze, zählt der Stop-Loss (pessimistisch). Aktien nur zur regulären Handelszeit, Durchschnitte je Sitzung neu. Beim ETF-Scalping keine Einstiege in den letzten 15 Minuten, Glattstellen 5 Minuten vor Schluss bzw. mit der letzten Kerze des Tages.
+* Trendfilter wie im Bot, berechnet auf den 1-Minuten-Kerzen des Backtests. Ausgelassene Signale erscheinen unter „gesperrte Einstiege“ als „Trendfilter“.
 * Optional werden die Risikogrenzen des Modus nachgebildet (Einstiege pro Stunde/Tag, Verlustserie, Tagesverlust, max. Orderwert).
 * Vergangene Ergebnisse sind keine Vorhersage. Der Backtest zeigt vor allem, wie stark Kosten und Spread kurze Trades belasten.
 
@@ -304,7 +305,7 @@ WantedBy=multi-user.target
   * US-Aktien/ETFs (`us_equity`, kein OTC): Betragsorders (≥ 1, max. 2 Nachkommastellen) und Bruchstücke (max. 9 Nachkommastellen) nur für bruchstückfähige Instrumente und nur mit Gültigkeit `day`; ganze Stück auch mit `gtc`.
   * Krypto (`crypto`, nur Paare gegen USD wie `BTC/USD`): Gültigkeit immer `gtc`, Mindestmenge laut Broker, Kauf zum Brief-, Verkauf zum Geldkurs. Alpaca berechnet je Ausführung eine Gebühr.
 
-### Scalping-Strategie (Krypto)
+### Scalping-Strategie (Krypto und US-ETFs/Aktien)
 Standardwerte (technische Paper-Testwerte, von Ihnen bestätigt): `BTC/USD`, `ETH/USD` und `SOL/USD` parallel, Einsatz 50 USD je Symbol und Trade, Stop-Loss 0,3 %, Take-Profit 0,6 %, max. Haltedauer 10 Min., Mikrokerzen à 10 s, Durchschnitte über 6 bzw. 18 Mikrokerzen (1 bzw. 3 Minuten), Kursabruf alle 2 s, geschätzte Gebühr 0,25 % je Ausführung, Schutzorder beim Broker an (Limit 0,5 % unter dem Stopp).
 
 1. **Kurse:** Im PAPER-Modus kommen die besten Geld-/Briefkurse per **Echtzeit-Datenstrom**, sobald sie sich ändern. Jedes Kurs-Update fliesst als Mittelkurs in die Mikrokerzen; der Bot reagiert darauf sofort, höchstens zweimal pro Sekunde. Ohne Strom (DEMO, Proxy-Modus, Verbindungsabbruch) holt der Bot alle 2 Sekunden die Kurse **aller Symbole in einer Anfrage** (`data.alpaca.markets/v1beta3/crypto/us`). Bei Lücken über 30 s beginnt die Kerzenreihe neu.
@@ -312,6 +313,18 @@ Standardwerte (technische Paper-Testwerte, von Ihnen bestätigt): `BTC/USD`, `ET
 3. **Schutzorder:** Sobald der Kauf ausgeführt ist, legt der Bot beim Broker eine Stop-Limit-Verkaufsorder über den verfügbaren Bestand an (Stopp = Stop-Loss-Kurs, Limit 0,5 % darunter, Gültigkeit `gtc`). Sie schützt die Position auch dann, wenn Bot oder Server ausfallen.
 4. **Ausstieg** sobald der Geldkurs das Kursziel erreicht oder die Haltedauer abläuft: Der Bot storniert zuerst die Schutzorder und verkauft dann per Market-Order. Beim **Stop-Loss** übernimmt die Schutzorder. Wird sie bei einem Kurssprung unter das Limit nicht ausgeführt, storniert der Bot sie nach 20 Sekunden und verkauft selbst. Verkauft wird höchstens der verfügbare Bestand (Gebühren können ihn leicht verringern). Ohne Schutzorder (abschaltbar) verkauft der Bot beim Stop-Loss direkt.
 5. Jeder Trade erscheint mit Einstieg, Ausstieg, Grund, Brutto, geschätzten Kosten und Netto unter *Bot → Trades*. Füllt die Schutzorder, während der Bot pausiert ist, erkennt der Hintergrundabgleich das und schliesst den Trade („Stop-Loss (Schutzorder)“).
+
+**Trendfilter (Standard: an, 30 Minuten):** Nach einem Kaufsignal kauft der Bot nur, wenn der aktuelle Kurs über dem Durchschnitt der letzten 30 abgeschlossenen 1-Minuten-Kerzen liegt **und** dieser Durchschnitt höher ist als vor 5 Minuten. Fehlen Kerzen, gibt es keinen Einstieg. Ausgelassene Signale stehen mit Begründung im *Entscheidungsverlauf* („Trendfilter: …“). Bei ETFs/Aktien zählen nur Kerzen des laufenden Handelstags. Dadurch gibt es in den ersten gut 35 Minuten nach Eröffnung keine Einstiege, und die unruhige Eröffnungsphase fällt weg.
+
+**US-ETFs/Aktien beim Scalping:**
+* **Warum:** Alpaca handelt US-Aktien und ETFs **kommissionsfrei**. Ein Trade kostet nur den Spread (bei SPY/QQQ meist um 0,01–0,02 %) statt rund 0,5 % wie bei Krypto. Die Hürde für ein positives Ergebnis ist damit viel niedriger.
+* **Handelszeit:** nur in der regulären US-Handelszeit, 9:30–16:00 New York, also 15:30–22:00 Uhr mitteleuropäischer Zeit (in den Umstellungswochen eine Stunde abweichend). Ausserhalb fragt der Bot keine Aktienkurse ab und sendet keine Orders.
+* **Börsenschluss:** keine neuen Einstiege in den letzten 15 Minuten. Offene Trades werden 5 Minuten vor Schluss verkauft („Börsenschluss“), nie über Nacht gehalten.
+* **Eigene Werte:** Standard Stop-Loss 0,15 %, Take-Profit 0,25 %, Haltedauer 30 Min., Gebühr 0 %. Die Werte sind Platzhalter: ETFs bewegen sich viel weniger als Krypto. Vergleichen Sie Varianten im Backtest.
+* **Orders:** Kauf als Betragsorder (Bruchstücke) mit Gültigkeit `day`, Verkauf ebenso. Kurse kommen per Abfrage aus dem IEX-Feed, alle ETFs in einer Anfrage. Die Spread-Grenze der Risikoeinstellungen gilt auch hier.
+* **Kein Stop beim Broker:** Für ETFs/Aktien gibt es keine Schutzorder beim Broker, weil die Mengen Bruchstücke sind. Der Bot überwacht den Stop-Loss selbst.
+* **Krypto nur ausserhalb der US-Handelszeit** (Standard an, wenn ETFs in der Liste sind): Tagsüber handeln die ETFs, nachts und am Wochenende Krypto. Offene Krypto-Trades laufen bei Börseneröffnung normal zu Ende. Im DEMO-Modus gilt die Börse immer als offen.
+* **Für später, falls je echtes Geld:** In den USA galt für Margin-Konten unter 25'000 USD die „Pattern Day Trader“-Regel: höchstens 3 Tagesgeschäfte in 5 Börsentagen. An dieser Regel wird gearbeitet; vor echtem Handel bitte den aktuellen Stand bei Alpaca prüfen. Im Paper-Konto mit 100'000 USD spielt sie keine Rolle.
 
 **Kosten:** Mit 0,25 % Gebühr je Ausführung kostet ein Trade rund 0,5 % plus Spread. Bei 0,6 % Take-Profit bleiben netto höchstens rund 0,1 %, ein Stop-Loss kostet netto rund 0,8 %. Die UI rechnet das bei den Parametern vor und warnt, wenn das Ziel nicht über den Kosten liegt. Ob das Paper-Konto Krypto-Gebühren abbildet, ist nicht geprüft; die Trades-Tabelle zeigt deshalb geschätzte Kosten.
 
@@ -375,7 +388,7 @@ SMA kurz (10) und SMA lang (30) auf **vollständig abgeschlossenen** Minutenkerz
 
 Ausgeführt in der Claude-Code-Cloud am 30.10.2026:
 
-* Backend: `uv run pytest -q` → **174 Tests bestanden** (Stand Stufe 3 mit Datenstrom) (Mock-Tests, kein Netzwerk). Abgedeckt: Verbindungsantworten und Auth-Fehler, strikte Paper-Zieladressen/Redirects, Demo/Paper-Trennung, Risiko- und Bestandsgrenzen, Tagesverlust mit Tageswechsel, Mehrfachstarts (auch parallel), Order-Duplikate nach Timeouts, Neustartabgleich mit Teilausführung, wiederholte Strategiesignale, CSRF/Origin/Host-Schutz.
+* Backend: `uv run pytest -q` → **190 Tests bestanden** (Stand mit ETF-Scalping und Trendfilter) (Mock-Tests, kein Netzwerk). Abgedeckt: Verbindungsantworten und Auth-Fehler, strikte Paper-Zieladressen/Redirects, Demo/Paper-Trennung, Risiko- und Bestandsgrenzen, Tagesverlust mit Tageswechsel, Mehrfachstarts (auch parallel), Order-Duplikate nach Timeouts, Neustartabgleich mit Teilausführung, wiederholte Strategiesignale, CSRF/Origin/Host-Schutz.
 * Frontend: `npm run typecheck`, `npm run build` und `npm audit --omit=dev` (0 Schwachstellen) fehlerfrei.
 * Neues Design (Stufe 2) im Headless-Chromium geprüft, Desktop 1440 px und Smartphone 390 px: Übersicht mit Kennzahlen, Chart (Fadenkreuz-Legende, Mausrad-Zoom, Intervallwechsel), Symbolauswahl mit Vorschlägen und Suche, Eingabevalidierung, Bestätigungsdialog und Demo-Kauf, Orderverlauf, Handel, Bot, Backtest-Lauf, Einstellungen, Moduswechsel nach PAPER mit gestaltetem Fehlerzustand, Diagnose, mobiles Menü. Keine Konsolenfehler, keine horizontale Seiten-Scrollleiste (390/390 px). Kontraste der Farbpalette berechnet (WCAG): Text mindestens 4,5:1; Gold #B8924A nur grafisch bzw. auf Anthrazit, Eingabefelder mit zusätzlichem Rahmen-Token #878F99 (3,3:1).
 * Laufende Anwendung im Headless-Chromium geprüft: DEMO-Übersicht, Chart, manuelle Betrags- und Stückzahl-Order mit Zusammenfassung und Pflichtbestätigung, Teilausführung → ausgeführt, Bot Start/Pause, Wechsel nach PAPER mit Fehleranzeige ohne Demodaten, gesperrte Paper-Orders, Diagnose und Verbindungstest, Mobilansicht. Keine Konsolenfehler.
@@ -401,6 +414,11 @@ Ausgeführt in der Claude-Code-Cloud am 30.10.2026:
   * keine Ströme in DEMO, keine Schlüssel in Status oder Fehlern
 
   Zusätzlich lief die echte websockets-Bibliothek gegen einen lokalen Server, einschliesslich abgelehnter Weiterleitung. **Gegen Alpaca selbst noch nicht geprüft**, weil die Schlüssel in der Cloud ungültig sind. Das zeigt der erste PAPER-Lauf auf dem Server unter *Diagnose → Kursstrom/Order-Strom*.
+* **ETF-Scalping und Trendfilter (30.10.2026), nur Mocks und DEMO:**
+  * *ETFs:* Kauf und Verkauf mit Gültigkeit `day` und ohne Schutzorder; Gebühr 0; eigene Stop-Loss-/Ziel-Werte. Keine Kursabfragen und Orders bei geschlossener Börse, keine Einstiege 15 Minuten vor Schluss, Glattstellen 5 Minuten vor Schluss. Krypto pausiert während der US-Handelszeit, auf Wunsch abschaltbar. Zu breiter IEX-Spread sperrt den Einstieg; nicht bruchstückfähige Werte werden beim Start abgelehnt. Mehrere ETF-Kurse kommen in einer Anfrage.
+  * *Trendfilter:* sperrt bei fallendem Trend, erlaubt bei steigendem, sperrt ohne genügend Kerzen. Im Backtest dasselbe, ebenso das Glattstellen und die Einstiegssperre vor Börsenschluss.
+  * Im Browser bei 1440 und 390 px ohne Konsolenfehler geprüft.
+  * **Gegen die echte Alpaca-API noch nicht geprüft**, insbesondere die gebündelte ETF-Kursabfrage im IEX-Feed. Das zeigt der erste PAPER-Tag mit ETFs.
 
 | PAPER-Fehlerzustand (ohne Demodaten) | Smartphone |
 | --- | --- |

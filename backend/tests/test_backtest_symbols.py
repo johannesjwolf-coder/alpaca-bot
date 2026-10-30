@@ -122,8 +122,9 @@ def test_regular_session_filter():
 
 
 def test_request_validation():
+    assert req(symbol="SPY").symbol == "SPY"  # Scalping auch für Aktien/ETFs
     with pytest.raises(ValueError):
-        req(symbol="SPY")  # Scalping nur Krypto
+        req(symbol="BTC/USD", strategy="sma")  # SMA-Minutenstrategie nur Aktien/ETFs
     with pytest.raises(ValueError):
         req(short_window=4, long_window=4)
     with pytest.raises(ValueError):

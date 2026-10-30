@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .broker.base import SYMBOL_RE, is_crypto
@@ -27,12 +29,27 @@ class RiskLimits(BaseModel):
 STRATEGIES = ("scalp", "sma")
 
 
+# Aktien/ETFs beim Scalping: keine neuen Einstiege kurz vor Börsenschluss, offene Trades vorher glattstellen
+NO_ENTRY_BEFORE_CLOSE_MIN = 15
+FLATTEN_BEFORE_CLOSE_MIN = 5
+
+
+@dataclass(frozen=True)
+class ScalpProfile:
+    stop_loss_pct: float
+    take_profit_pct: float
+    max_hold_min: float
+    fee_pct: float
+
+
 class BotParams(BaseModel):
     """Parameter der Teststrategien. Keine validierte oder profitable Strategie.
 
-    * ``scalp`` (Krypto): Kurse alle paar Sekunden, Mikrokerzen von ``bar_seconds``,
-      Einstieg bei Aufwärtskreuzung kurzer/langer Durchschnitt, Ausstieg per
-      Stop-Loss, Take-Profit oder maximaler Haltedauer.
+    * ``scalp`` (Krypto und US-Aktien/ETFs): Kurse alle paar Sekunden bzw. per Datenstrom,
+      Mikrokerzen von ``bar_seconds``, Einstieg bei Aufwärtskreuzung kurzer/langer Durchschnitt
+      (optional nur bei steigendem Trend), Ausstieg per Stop-Loss, Take-Profit oder maximaler
+      Haltedauer – je Anlageklasse mit eigenen Werten. Aktien/ETFs nur in der regulären
+      Handelszeit und vor Börsenschluss glattgestellt.
     * ``sma`` (US-Aktien/ETFs): Kreuzung auf abgeschlossenen Minutenkerzen der laufenden Sitzung.
     """
 
@@ -49,8 +66,19 @@ class BotParams(BaseModel):
     take_profit_pct: float = Field(0.6, gt=0, le=50)
     max_hold_min: float = Field(10.0, gt=0, le=1440)
     fee_pct: float = Field(0.25, ge=0, le=2, description="Geschätzte Gebühr je Ausführung in %")
-    broker_stop: bool = Field(True, description="Stop-Limit-Schutzorder beim Broker nach jedem Kauf")
+    broker_stop: bool = Field(True, description="Stop-Limit-Schutzorder beim Broker nach jedem Kauf (nur Krypto)")
     stop_limit_offset_pct: float = Field(0.5, ge=0.05, le=5, description="Limit unter dem Stoppreis in %")
+    # Scalping mit US-Aktien/ETFs: kommissionsfrei, nur in der regulären Handelszeit, vor Schluss glattgestellt
+    stock_stop_loss_pct: float = Field(0.15, gt=0, le=20)
+    stock_take_profit_pct: float = Field(0.25, gt=0, le=50)
+    stock_max_hold_min: float = Field(30.0, gt=0, le=390)
+    stock_fee_pct: float = Field(0.0, ge=0, le=2, description="Gebühr je Ausführung Aktien/ETFs in % (Alpaca: keine)")
+    crypto_outside_session_only: bool = Field(
+        True, description="Krypto nur, solange die US-Börse geschlossen ist (gilt, wenn Aktien/ETFs in der Liste sind)"
+    )
+    # Trendfilter: Einstieg nur über einem steigenden Durchschnitt der letzten Minutenkerzen
+    trend_filter: bool = Field(True)
+    trend_minutes: int = Field(30, ge=5, le=240)
 
     @field_validator("strategy")
     @classmethod
@@ -89,10 +117,6 @@ class BotParams(BaseModel):
     def _windows(self) -> "BotParams":
         if self.short_window >= self.long_window:
             raise ValueError("Kurzer Durchschnitt muss kleiner als der lange sein")
-        if self.strategy == "scalp" and any(not is_crypto(s) for s in self.scalp_symbols):
-            raise ValueError("Scalping ist in dieser Version nur für Krypto (z. B. BTC/USD) vorgesehen")
-        if self.strategy == "scalp" and not is_crypto(self.symbol):
-            raise ValueError("Scalping ist in dieser Version nur für Krypto (z. B. BTC/USD) vorgesehen")
         if self.strategy == "sma" and is_crypto(self.symbol):
             raise ValueError("Die SMA-Minutenstrategie ist für US-Aktien/ETFs vorgesehen")
         return self
@@ -100,6 +124,16 @@ class BotParams(BaseModel):
     @property
     def roundtrip_cost_pct(self) -> float:
         return 2 * self.fee_pct
+
+    @property
+    def has_stocks(self) -> bool:
+        return any(not is_crypto(s) for s in self.scalp_symbols)
+
+    def profile(self, symbol: str) -> ScalpProfile:
+        """Ausstiegs- und Kostenwerte je Anlageklasse (Krypto bzw. US-Aktien/ETFs)."""
+        if is_crypto(symbol):
+            return ScalpProfile(self.stop_loss_pct, self.take_profit_pct, self.max_hold_min, self.fee_pct)
+        return ScalpProfile(self.stock_stop_loss_pct, self.stock_take_profit_pct, self.stock_max_hold_min, self.stock_fee_pct)
 
 
 def get_risk_limits(db: Database, mode: str) -> RiskLimits:

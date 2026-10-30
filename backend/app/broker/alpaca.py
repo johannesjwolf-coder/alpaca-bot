@@ -729,11 +729,17 @@ class AlpacaPaperBroker(Broker):
                 bid, ask, at = _f(q.get("bp")), _f(q.get("ap")), _dt(q.get("t"))
                 if bid and ask and at is not None and ask >= bid and sym in crypto:
                     out[sym] = Quote(symbol=sym, bid=bid, ask=ask, at=at, source="Alpaca Krypto (bester Geld-/Briefkurs)")
-        for s in symbols:
-            if not is_crypto(s):
-                q = await self.get_quote(s)
-                if q is not None:
-                    out[s] = q
+        stocks = [s for s in symbols if not is_crypto(s)]
+        if stocks:
+            # Ebenfalls ein Abruf für alle Aktien/ETFs (IEX-Feed).
+            data = await self._request(
+                "GET", "data", "/v2/stocks/quotes/latest",
+                params={"symbols": ",".join(_check_symbol(s) for s in stocks), "feed": DATA_FEED},
+            )
+            for sym, q in ((data or {}).get("quotes") or {}).items():
+                bid, ask, at = _f(q.get("bp")), _f(q.get("ap")), _dt(q.get("t"))
+                if bid and ask and at is not None and ask >= bid and sym in stocks:
+                    out[sym] = Quote(symbol=sym, bid=bid, ask=ask, at=at, source="IEX-Quote (nur Handelsplatz IEX)")
         return out
 
     async def get_quote(self, symbol: str) -> Quote | None:

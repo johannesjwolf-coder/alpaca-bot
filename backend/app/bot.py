@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
-from .broker.base import BrokerError, is_open_status
+from .broker.base import BrokerError, is_crypto, is_open_status
 from .db import iso, parse_iso
 from .orders import OrderBlocked, OrderFailed, OrderInput
 from .risk import available_to_sell
@@ -104,21 +104,32 @@ class BotEngine:
             if acct.status != "ACTIVE" or acct.trading_blocked or acct.account_blocked or acct.trade_suspended_by_user:
                 raise BotStartError(f"Broker-Handelsstatus erlaubt keinen Handel (Status {acct.status}).")
             if params.strategy == "scalp":
-                await self._check_scalp_start(rt, params)
+                await self._check_scalp_start(rt, params, snap)
                 self.scalper.reset(params)
-                await ctx.streams.market_for(mode, params.scalp_symbols)
+                await ctx.streams.market_for(mode, [s for s in params.scalp_symbols if is_crypto(s)])
                 interval = params.poll_interval_s
                 feed = (
                     f"Kurse per Echtzeit-Datenstrom (Rückfall: Abfrage alle {params.poll_interval_s:g} s)"
                     if ctx.streams.available and mode == "PAPER"
                     else f"Kursabruf alle {params.poll_interval_s:g} s"
                 )
+                parts = []
+                if any(is_crypto(s) for s in params.scalp_symbols):
+                    parts.append(
+                        f"Krypto: Stop-Loss −{params.stop_loss_pct:g} %, Take-Profit +{params.take_profit_pct:g} %, "
+                        f"max. {params.max_hold_min:g} Min., Schutzorder beim Broker {'aktiv' if params.broker_stop else 'aus'}"
+                        + (", nur bei geschlossener US-Börse" if params.has_stocks and params.crypto_outside_session_only else "")
+                    )
+                if params.has_stocks:
+                    parts.append(
+                        f"Aktien/ETFs: Stop-Loss −{params.stock_stop_loss_pct:g} %, Take-Profit +{params.stock_take_profit_pct:g} %, "
+                        f"max. {params.stock_max_hold_min:g} Min., nur reguläre Handelszeit, Glattstellen vor Börsenschluss"
+                    )
+                trend = f"Trendfilter {params.trend_minutes} Min." if params.trend_filter else "ohne Trendfilter"
                 what = (
                     f"Scalping {', '.join(params.scalp_symbols)}: Mikrokerzen {params.bar_seconds} s, SMA{params.short_window}/"
-                    f"SMA{params.long_window}, Einsatz {params.order_value:g} USD, Stop-Loss −{params.stop_loss_pct:g} %, "
-                    f"Take-Profit +{params.take_profit_pct:g} %, max. {params.max_hold_min:g} Min., "
-                    f"{feed}, Schutzorder beim Broker {'aktiv' if params.broker_stop else 'aus'}. "
-                    "Teststrategie ohne Gewinnzusage."
+                    f"SMA{params.long_window}, {trend}, Einsatz {params.order_value:g} USD je Trade. "
+                    + ". ".join(parts) + f". {feed}. Teststrategie ohne Gewinnzusage."
                 )
             else:
                 await self._check_sma_start(rt, params, snap)
@@ -135,30 +146,47 @@ class BotEngine:
             ctx.db.add_event(mode, "info", "bot", f"Bot gestartet: {what}", push=True)
             return self.state()
 
-    async def _check_scalp_start(self, rt, params: BotParams) -> None:
-        """Krypto: 24/7 – statt Börsenzeiten zählen handelbare Instrumente und frische Kurse."""
+    async def _check_scalp_start(self, rt, params: BotParams, snap) -> None:
+        """Handelbare Instrumente und frische Kurse. Krypto handelt rund um die Uhr; Aktien/ETFs nur
+        in der regulären Handelszeit – bei geschlossener Börse warten sie auf die Eröffnung."""
         symbols = params.scalp_symbols
         for symbol in symbols:
             try:
                 asset = await rt.broker.get_asset(symbol)
             except BrokerError as exc:
                 raise BotStartError(f"Instrument {symbol}: {exc.message}") from exc
-            if not asset.tradable or asset.status != "active" or asset.asset_class != "crypto":
+            if not asset.tradable or asset.status != "active":
+                raise BotStartError(f"Instrument {symbol} ist laut Broker nicht handelbar.")
+            if is_crypto(symbol) and asset.asset_class != "crypto":
                 raise BotStartError(f"Instrument {symbol} ist laut Broker nicht als Krypto handelbar.")
-        try:
-            quotes = await rt.broker.get_quotes(symbols)
-        except BrokerError as exc:
-            raise BotStartError(f"Kurse nicht verfügbar: {exc.message}") from exc
-        now = rt._now()
-        stale = [s for s in symbols if s not in quotes or (now - quotes[s].at).total_seconds() > QUOTE_MAX_AGE_S]
-        if stale:
-            raise BotStartError(f"Kein frischer Geld-/Briefkurs für {', '.join(stale)} (erlaubt {QUOTE_MAX_AGE_S:.0f} s).")
-        if params.take_profit_pct <= params.roundtrip_cost_pct:
-            self.ctx.db.add_event(
-                self.ctx.mode, "warning", "bot",
-                f"Hinweis: Take-Profit {params.take_profit_pct:g} % liegt nicht über den geschätzten Kosten "
-                f"je Trade ({params.roundtrip_cost_pct:g} % Gebühren + Spread). Netto ist kaum Gewinn möglich.",
-            )
+            if not is_crypto(symbol):
+                if asset.asset_class != "us_equity":
+                    raise BotStartError(f"Instrument {symbol} ist keine US-Aktie/kein ETF.")
+                if not asset.fractionable:
+                    raise BotStartError(
+                        f"{symbol} ist nicht bruchstückfähig – Scalping mit festem Betrag braucht Bruchstücke."
+                    )
+        live = [s for s in symbols if is_crypto(s) or snap.clock.is_open]
+        if live:
+            try:
+                quotes = await rt.broker.get_quotes(live)
+            except BrokerError as exc:
+                raise BotStartError(f"Kurse nicht verfügbar: {exc.message}") from exc
+            now = rt._now()
+            stale = [s for s in live if s not in quotes or (now - quotes[s].at).total_seconds() > QUOTE_MAX_AGE_S]
+            if stale:
+                raise BotStartError(f"Kein frischer Geld-/Briefkurs für {', '.join(stale)} (erlaubt {QUOTE_MAX_AGE_S:.0f} s).")
+        for label, cls in (("Krypto", True), ("Aktien/ETFs", False)):
+            sym = next((s for s in symbols if is_crypto(s) == cls), None)
+            if sym is None:
+                continue
+            prof = params.profile(sym)
+            if prof.take_profit_pct <= 2 * prof.fee_pct:
+                self.ctx.db.add_event(
+                    self.ctx.mode, "warning", "bot",
+                    f"Hinweis {label}: Take-Profit {prof.take_profit_pct:g} % liegt nicht über den geschätzten Kosten "
+                    f"je Trade ({2 * prof.fee_pct:g} % Gebühren + Spread). Netto ist kaum Gewinn möglich.",
+                )
 
     async def _check_sma_start(self, rt, params: BotParams, snap) -> None:
         ctx = self.ctx

@@ -15,20 +15,30 @@ const ACTION: Record<string, [string, string]> = {
   failed: ["Broker lehnte ab", "bad"],
   order: ["Order gesendet", "ok"],
 };
-type NumKey = Exclude<keyof BotParams, "strategy" | "symbol" | "symbols" | "broker_stop">;
-const CRYPTO_RE = /^[A-Z0-9]{2,10}\/USD$/;
+type NumKey = { [K in keyof BotParams]: BotParams[K] extends number ? K : never }[keyof BotParams];
+type Field = [NumKey, string, string, string?];
+const SYMBOL_RE = /^(?:[A-Z]{1,5}(?:\.[A-Z]{1,2})?|[A-Z0-9]{2,10}\/USD)$/;
 const MAX_SYMBOLS = 5;
-const SCALP_FIELDS: [NumKey, string, string, string?][] = [
+const isCrypto = (s: string) => s.includes("/");
+const SCALP_FIELDS: Field[] = [
   ["order_value", "Einsatz je Trade", "1", "USD"],
-  ["stop_loss_pct", "Stop-Loss", "0.05", "%"],
-  ["take_profit_pct", "Take-Profit", "0.05", "%"],
-  ["max_hold_min", "Max. Haltedauer", "1", "Min."],
   ["bar_seconds", "Mikrokerze", "1", "Sek."],
   ["short_window", "Kurzer Ø", "1", "Kerzen"],
   ["long_window", "Langer Ø", "1", "Kerzen"],
   ["poll_interval_s", "Kursabruf alle", "0.5", "Sek."],
+];
+const CRYPTO_FIELDS: Field[] = [
+  ["stop_loss_pct", "Stop-Loss", "0.05", "%"],
+  ["take_profit_pct", "Take-Profit", "0.05", "%"],
+  ["max_hold_min", "Max. Haltedauer", "1", "Min."],
   ["fee_pct", "Gebühr je Ausführung", "0.01", "%"],
   ["stop_limit_offset_pct", "Limit unter Stoppreis", "0.05", "%"],
+];
+const STOCK_FIELDS: Field[] = [
+  ["stock_stop_loss_pct", "Stop-Loss", "0.05", "%"],
+  ["stock_take_profit_pct", "Take-Profit", "0.05", "%"],
+  ["stock_max_hold_min", "Max. Haltedauer", "1", "Min."],
+  ["stock_fee_pct", "Gebühr je Ausführung", "0.01", "%"],
 ];
 const SMA_FIELDS: [NumKey, string, string, string?][] = [
   ["order_value", "Zielwert je Kauf", "1", "USD"],
@@ -88,10 +98,13 @@ function SymbolListField({ value, onChange, disabled, suggestions }: {
 }) {
   const [draft, setDraft] = useState("");
   const [err, setErr] = useState<string | null>(null);
-  const crypto = suggestions.filter((i) => i.asset_class === "crypto" && !value.includes(i.symbol));
+  const offered = [
+    ...suggestions.filter((i) => i.asset_class === "us_equity" && ["SPY", "QQQ", "IWM", "DIA"].includes(i.symbol)),
+    ...suggestions.filter((i) => i.asset_class === "crypto"),
+  ].filter((i, idx, arr) => !value.includes(i.symbol) && arr.findIndex((x) => x.symbol === i.symbol) === idx);
   const add = (raw: string) => {
     const sym = raw.trim().toUpperCase();
-    if (!CRYPTO_RE.test(sym)) return setErr("Nur Krypto-Paare gegen USD, z. B. ETH/USD.");
+    if (!SYMBOL_RE.test(sym)) return setErr("Ungültiges Symbol – z. B. SPY, QQQ oder ETH/USD.");
     if (value.includes(sym)) return setErr(`${sym} ist bereits in der Liste.`);
     if (value.length >= MAX_SYMBOLS) return setErr(`Höchstens ${MAX_SYMBOLS} Symbole gleichzeitig.`);
     onChange([...value, sym]);
@@ -100,7 +113,7 @@ function SymbolListField({ value, onChange, disabled, suggestions }: {
   };
   return (
     <div className="field">
-      <span id="sym-list-label">Symbole (Krypto, max. {MAX_SYMBOLS}) – der Einsatz gilt je Symbol und Trade</span>
+      <span id="sym-list-label">Symbole (Krypto und US-ETFs/Aktien, max. {MAX_SYMBOLS}) – der Einsatz gilt je Symbol und Trade</span>
       <div className="chips" aria-labelledby="sym-list-label">
         {value.map((sym) => (
           <span className="chip" key={sym}>
@@ -116,14 +129,14 @@ function SymbolListField({ value, onChange, disabled, suggestions }: {
       {!disabled && value.length < MAX_SYMBOLS && (
         <>
           <div className="row">
-            <input value={draft} placeholder="z. B. AVAX/USD" aria-label="Symbol hinzufügen" aria-invalid={!!err}
+            <input value={draft} placeholder="z. B. SPY oder AVAX/USD" aria-label="Symbol hinzufügen" aria-invalid={!!err}
                    onChange={(e) => { setDraft(e.target.value.toUpperCase()); setErr(null); }}
                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(draft); } }} />
             <button type="button" className="btn sm" onClick={() => add(draft)}>Hinzufügen</button>
           </div>
-          {crypto.length > 0 && (
-            <div className="quick-symbols" aria-label="Vorgeschlagene Krypto-Paare">
-              {crypto.slice(0, 6).map((i) => (
+          {offered.length > 0 && (
+            <div className="quick-symbols" aria-label="Vorgeschlagene Symbole">
+              {offered.slice(0, 8).map((i) => (
                 <button key={i.symbol} type="button" title={i.name || i.symbol} onClick={() => add(i.symbol)}>+ {i.symbol}</button>
               ))}
             </div>
@@ -166,7 +179,24 @@ export function BotPage({ status, onChange }: { status: Status; onChange: () => 
   }
 
   const scalp = params?.strategy === "scalp";
-  const cost = params ? 2 * params.fee_pct : 0;
+  const hasCrypto = !!params?.symbols.some(isCrypto);
+  const hasStocks = !!params?.symbols.some((s) => !isCrypto(s));
+  const field = ([k, label, step, unit]: Field) => params && (
+    <label className="field" key={k}>
+      <span>{label}{unit ? ` (${unit})` : ""}</span>
+      <input type="number" step={step} min={0} value={params[k]} disabled={running}
+             onChange={(e) => setParams({ ...params, [k]: Number(e.target.value) })} />
+    </label>
+  );
+  const costLine = (label: string, fee: number, tp: number, sl: number) => {
+    const cost = 2 * fee;
+    return (
+      <div>
+        <strong>{label}:</strong> Gebühren für Kauf und Verkauf ≈ {num(cost, 2)} % plus Spread. Take-Profit {num(tp, 2)} % → netto höchstens ≈ {pct(tp - cost)};
+        Stop-Loss {num(sl, 2)} % → netto ≈ {pct(-(sl + cost))}.{tp <= cost && " Das Ziel liegt nicht über den Kosten – netto ist kein Gewinn möglich."}
+      </div>
+    );
+  };
   const summary = info.data?.summary;
   const saved = info.data?.params;
 
@@ -186,7 +216,7 @@ export function BotPage({ status, onChange }: { status: Status; onChange: () => 
                           if (!saved) return;
                           const ok = await confirm({
                             title: "Automatik starten?", confirmLabel: "Bot starten",
-                            body: <dl className="kv"><dt>Modus</dt><dd><strong>{mode}</strong></dd><dt>Strategie</dt><dd>{saved.strategy === "scalp" ? "Scalping Krypto" : "SMA Aktien"}</dd><dt>{saved.strategy === "scalp" ? "Symbole" : "Symbol"}</dt><dd>{saved.strategy === "scalp" ? saved.symbols.join(", ") : saved.symbol}</dd><dt>Einsatz je Trade</dt><dd>{money(saved.order_value, "USD")}{saved.strategy === "scalp" && saved.symbols.length > 1 ? " je Symbol" : ""}</dd>{saved.strategy === "scalp" && <><dt>Schutzorder</dt><dd>{saved.broker_stop ? "Stop-Limit beim Broker nach jedem Kauf" : "aus – Stop-Loss nur durch den Bot"}</dd></>}</dl>,
+                            body: <dl className="kv"><dt>Modus</dt><dd><strong>{mode}</strong></dd><dt>Strategie</dt><dd>{saved.strategy === "scalp" ? "Scalping" : "SMA Aktien"}</dd><dt>{saved.strategy === "scalp" ? "Symbole" : "Symbol"}</dt><dd>{saved.strategy === "scalp" ? saved.symbols.join(", ") : saved.symbol}</dd><dt>Einsatz je Trade</dt><dd>{money(saved.order_value, "USD")}{saved.strategy === "scalp" && saved.symbols.length > 1 ? " je Symbol" : ""}</dd>{saved.strategy === "scalp" && <><dt>Trendfilter</dt><dd>{saved.trend_filter ? `an (${saved.trend_minutes} Min.)` : "aus"}</dd></>}{saved.strategy === "scalp" && saved.symbols.some(isCrypto) && <><dt>Schutzorder (Krypto)</dt><dd>{saved.broker_stop ? "Stop-Limit beim Broker nach jedem Kauf" : "aus – Stop-Loss nur durch den Bot"}</dd></>}{saved.strategy === "scalp" && saved.symbols.some((s) => !isCrypto(s)) && <><dt>Aktien/ETFs</dt><dd>nur 15:30–22:00 Uhr (US-Börse), Glattstellen vor Schluss{saved.crypto_outside_session_only && saved.symbols.some(isCrypto) ? "; Krypto nur ausserhalb" : ""}</dd></>}</dl>,
                           });
                           if (ok) await act(() => api.post("/bot/start", { expected_mode: mode }), "Bot gestartet.");
                         }}>
@@ -196,8 +226,8 @@ export function BotPage({ status, onChange }: { status: Status; onChange: () => 
               <span className="muted sm">{status.bot.last_status || "—"}</span>
             </div>
             <Notice title="Was „Pausieren“ bedeutet">
-              Pausieren stoppt alle neuen automatischen Aufträge – beim Scalping auch Take-Profit und Haltedauer.
-              Eine bereits gesetzte Schutzorder (Stop-Limit) bleibt beim Broker aktiv; ohne Schutzorder ist die Position ungeschützt.
+              Pausieren stoppt alle neuen automatischen Aufträge – beim Scalping auch Take-Profit, Haltedauer und das Glattstellen
+              vor Börsenschluss. Eine bereits gesetzte Schutzorder (Stop-Limit, nur Krypto) bleibt beim Broker aktiv; ohne Schutzorder ist die Position ungeschützt.
               Zum Aussteigen: „Schliessen…“ in der Positionstabelle oder <b>Not-Aus</b> oben rechts.
             </Notice>
             {mode === "PAPER" && !status.orders_enabled && <Notice tone="warn">Start im PAPER-Modus erst nach ausdrücklicher Paper-Orderfreigabe (Einstellungen).</Notice>}
@@ -219,7 +249,7 @@ export function BotPage({ status, onChange }: { status: Status; onChange: () => 
           <form className="stack" onSubmit={(e) => { e.preventDefault(); void act(() => api.put("/settings/bot", { ...params, expected_mode: mode }), "Parameter gespeichert."); }}>
             <Seg label="Strategie" value={params.strategy} disabled={running}
                  onChange={(v) => info.data && setParams({ ...info.data.defaults[v] })}
-                 options={[{ id: "scalp", label: "Scalping Krypto" }, { id: "sma", label: "SMA Aktien (Minuten)" }]} />
+                 options={[{ id: "scalp", label: "Scalping (Krypto & ETFs)" }, { id: "sma", label: "SMA Aktien (Minuten)" }]} />
             {scalp && (
               <SymbolListField value={params.symbols} disabled={running} suggestions={suggestions.data?.items ?? []}
                                onChange={(symbols) => setParams({ ...params, symbols, symbol: symbols[0] ?? params.symbol })} />
@@ -231,35 +261,63 @@ export function BotPage({ status, onChange }: { status: Status; onChange: () => 
                   <input value={params.symbol} disabled={running} onChange={(e) => setParams({ ...params, symbol: e.target.value.toUpperCase() })} />
                 </label>
               )}
-              {(scalp ? SCALP_FIELDS : SMA_FIELDS).map(([k, label, step, unit]) => (
-                <label className="field" key={k}>
-                  <span>{label}{unit ? ` (${unit})` : ""}</span>
-                  <input type="number" step={step} min={0} value={params[k]} disabled={running}
-                         onChange={(e) => setParams({ ...params, [k]: Number(e.target.value) })} />
-                </label>
-              ))}
+              {(scalp ? SCALP_FIELDS : SMA_FIELDS).map(field)}
             </div>
             {scalp && (
-              <label className="check">
-                <input type="checkbox" checked={params.broker_stop} disabled={running}
-                       onChange={(e) => setParams({ ...params, broker_stop: e.target.checked })} />
-                <span>
-                  <strong>Schutzorder beim Broker</strong> – nach jedem Kauf eine Stop-Limit-Verkaufsorder (Stopp = Stop-Loss, Limit {num(params.stop_limit_offset_pct, 2)} % darunter).
-                  Sie greift auch, wenn Bot oder Server ausfallen. Bei einem Kurssprung unter das Limit wird sie nicht ausgeführt; dann verkauft der Bot nach 20 Sekunden selbst.
-                </span>
-              </label>
+              <div className="stack" style={{ gap: 8 }}>
+                <label className="check">
+                  <input type="checkbox" checked={params.trend_filter} disabled={running}
+                         onChange={(e) => setParams({ ...params, trend_filter: e.target.checked })} />
+                  <span>
+                    <strong>Trendfilter</strong> – nur kaufen, wenn der Kurs über dem Durchschnitt der letzten {params.trend_minutes} Minutenkerzen liegt
+                    und dieser steigt. Weniger, dafür besser abgesicherte Einstiege; bei Aktien/ETFs zählen nur Kerzen des laufenden Handelstags.
+                  </span>
+                </label>
+                {params.trend_filter && <div className="form-grid" style={{ maxWidth: 260 }}>{field(["trend_minutes", "Trend über", "1", "Minuten"])}</div>}
+              </div>
+            )}
+            {scalp && hasStocks && (
+              <fieldset className="param-group">
+                <legend>US-ETFs/Aktien</legend>
+                <p className="field-help">
+                  Nur während der US-Handelszeit (15:30–22:00 Uhr), keine neuen Einstiege in den letzten 15 Minuten, offene Trades werden
+                  5 Minuten vor Schluss verkauft. Bei Alpaca kommissionsfrei; Kurse über IEX. Der Bot überwacht den Stop-Loss selbst.
+                </p>
+                <div className="form-grid">{STOCK_FIELDS.map(field)}</div>
+                {hasCrypto && (
+                  <label className="check">
+                    <input type="checkbox" checked={params.crypto_outside_session_only} disabled={running}
+                           onChange={(e) => setParams({ ...params, crypto_outside_session_only: e.target.checked })} />
+                    <span><strong>Krypto nur ausserhalb der US-Handelszeit</strong> – tagsüber handeln die ETFs, nachts und am Wochenende Krypto.</span>
+                  </label>
+                )}
+              </fieldset>
+            )}
+            {scalp && hasCrypto && (
+              <fieldset className="param-group">
+                <legend>Krypto</legend>
+                <div className="form-grid">{CRYPTO_FIELDS.map(field)}</div>
+                <label className="check">
+                  <input type="checkbox" checked={params.broker_stop} disabled={running}
+                         onChange={(e) => setParams({ ...params, broker_stop: e.target.checked })} />
+                  <span>
+                    <strong>Schutzorder beim Broker</strong> – nach jedem Kauf eine Stop-Limit-Verkaufsorder (Stopp = Stop-Loss, Limit {num(params.stop_limit_offset_pct, 2)} % darunter).
+                    Sie greift auch, wenn Bot oder Server ausfallen. Bei einem Kurssprung unter das Limit wird sie nicht ausgeführt; dann verkauft der Bot nach 20 Sekunden selbst.
+                  </span>
+                </label>
+              </fieldset>
             )}
             {scalp && (
-              <Notice tone={params.take_profit_pct <= cost ? "warn" : ""} title="Kostenrechnung je Trade (geschätzt)">
-                Gebühren für Kauf und Verkauf ≈ {num(cost, 2)} % plus Spread. Take-Profit {num(params.take_profit_pct, 2)} % → netto höchstens ≈{" "}
-                {pct(params.take_profit_pct - cost)}; Stop-Loss {num(params.stop_loss_pct, 2)} % → netto ≈ {pct(-(params.stop_loss_pct + cost))}.
-                {params.take_profit_pct <= cost && " Das Ziel liegt nicht über den Kosten – netto ist kein Gewinn möglich."}
+              <Notice tone={(hasCrypto && params.take_profit_pct <= 2 * params.fee_pct) || (hasStocks && params.stock_take_profit_pct <= 2 * params.stock_fee_pct) ? "warn" : ""}
+                      title="Kostenrechnung je Trade (geschätzt)">
+                {hasStocks && costLine("ETFs/Aktien", params.stock_fee_pct, params.stock_take_profit_pct, params.stock_stop_loss_pct)}
+                {hasCrypto && costLine("Krypto", params.fee_pct, params.take_profit_pct, params.stop_loss_pct)}
               </Notice>
             )}
             <div className="row">
               <button className="btn primary" type="submit" disabled={busy || running}>Parameter speichern</button>
               <span className="field-help">
-                {scalp ? "Teststrategie: Kurse aller Symbole alle paar Sekunden, Mikrokerzen, Einstieg bei Aufwärtskreuzung, Ausstieg per Stop-Loss, Take-Profit oder Haltedauer. Risikogrenzen gelten gemeinsam für alle Symbole. Keine Gewinnzusage."
+                {scalp ? "Teststrategie: Kurse aller Symbole laufend, Mikrokerzen, Einstieg bei Aufwärtskreuzung (optional mit Trendfilter), Ausstieg per Stop-Loss, Take-Profit oder Haltedauer. Risikogrenzen gelten gemeinsam für alle Symbole. Keine Gewinnzusage."
                        : info.data?.disclaimer}
               </span>
             </div>

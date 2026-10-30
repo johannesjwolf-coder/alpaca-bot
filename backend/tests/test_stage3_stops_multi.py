@@ -12,7 +12,7 @@ from app.orders import OrderInput
 from app.scalper import STOP_GRACE_S, round_down_price
 from app.settings_store import BotParams, RiskLimits, set_bot_params, set_risk_limits
 
-BASE = dict(strategy="scalp", symbol="BTC/USD", symbols=["BTC/USD"], short_window=2, long_window=4, bar_seconds=5,
+BASE = dict(strategy="scalp", trend_filter=False, symbol="BTC/USD", symbols=["BTC/USD"], short_window=2, long_window=4, bar_seconds=5,
             poll_interval_s=1, order_value=20, stop_loss_pct=0.5, take_profit_pct=1.0, max_hold_min=10, fee_pct=0.25,
             broker_stop=True, stop_limit_offset_pct=0.5)
 DOWN_UP = [100, 99.8, 99.6, 99.4, 99.2, 99.0, 99.9, 100.0]

@@ -17,7 +17,7 @@ from app.settings_store import BotParams, NotifySettings, set_bot_params, set_no
 
 UI = {"X-Requested-With": "alpaca-bot-ui"}
 TOPIC, TOKEN = "bot-topic_1", "tok-123"
-SCALP = dict(strategy="scalp", symbol="BTC/USD", symbols=["BTC/USD"], short_window=2, long_window=4, bar_seconds=5,
+SCALP = dict(strategy="scalp", trend_filter=False, symbol="BTC/USD", symbols=["BTC/USD"], short_window=2, long_window=4, bar_seconds=5,
              poll_interval_s=1, order_value=20, broker_stop=False)
 
 

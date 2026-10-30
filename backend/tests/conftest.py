@@ -71,6 +71,8 @@ class FakeAlpaca:
                        "price_increment": "0.01"},
         }
         self.crypto_quotes: dict[str, dict] = {}
+        self.stock_quotes: dict[str, dict] = {}
+        self.next_close = "2026-10-30T20:00:00Z"  # 16:00 New York (EDT)
         self.prices = {"SPY": 10.0, "BRK.A": 600000.0}
         self.bars: dict[str, list[dict]] = {}
         self.calls: list[tuple[str, str, dict]] = []
@@ -93,6 +95,9 @@ class FakeAlpaca:
 
     def set_quote(self, symbol: str, bid: float, ask: float, at: datetime | None = None) -> None:
         self.crypto_quotes[symbol] = {"t": (at or self.clock()).isoformat().replace("+00:00", "Z"), "bp": bid, "ap": ask}
+
+    def set_stock_quote(self, symbol: str, bid: float, ask: float, at: datetime | None = None) -> None:
+        self.stock_quotes[symbol] = {"t": (at or self.clock()).isoformat().replace("+00:00", "Z"), "bp": bid, "ap": ask}
 
     def fill(self, order: dict, qty: float, price: float) -> None:
         order.update(status="filled", filled_qty=str(qty), filled_avg_price=str(price),
@@ -181,6 +186,10 @@ class FakeAlpaca:
             if path.endswith("/bars"):
                 page, token = self._page(self.bars.get(sym, []), q)
                 return httpx.Response(200, json={"bars": {sym: page}, "next_page_token": token})
+        if host == "data.alpaca.markets" and path == "/v2/stocks/quotes/latest":
+            assert q.get("feed") == ["iex"]
+            wanted = q["symbols"][0].split(",")
+            return httpx.Response(200, json={"quotes": {x: self.stock_quotes[x] for x in wanted if x in self.stock_quotes}})
         if host == "data.alpaca.markets":
             sym = path.split("/")[3]
             if path.endswith("/bars"):
@@ -194,7 +203,7 @@ class FakeAlpaca:
             return httpx.Response(200, json=self.account)
         if path == "/v2/clock":
             return httpx.Response(200, json={"timestamp": self.clock().isoformat(), "is_open": self.is_open,
-                                             "next_open": "2026-11-02T14:30:00Z", "next_close": "2026-10-30T20:00:00Z"})
+                                             "next_open": "2026-11-02T14:30:00Z", "next_close": self.next_close})
         if path == "/v2/calendar":
             self.calls_calendar = getattr(self, "calls_calendar", 0) + 1
             day = q["start"][0]

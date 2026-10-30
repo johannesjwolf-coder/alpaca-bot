@@ -43,6 +43,7 @@ export interface ScalperSymbolView {
 export interface ScalperState {
   status?: string;
   feed?: "stream" | "poll" | "mixed";
+  market_open?: boolean | null;
   symbols?: Record<string, ScalperSymbolView>;
 }
 
@@ -168,6 +169,13 @@ export interface BotParams {
   symbols: string[];
   broker_stop: boolean;
   stop_limit_offset_pct: number;
+  stock_stop_loss_pct: number;
+  stock_take_profit_pct: number;
+  stock_max_hold_min: number;
+  stock_fee_pct: number;
+  crypto_outside_session_only: boolean;
+  trend_filter: boolean;
+  trend_minutes: number;
   short_window: number;
   long_window: number;
   order_value: number;
@@ -361,6 +369,8 @@ export interface BacktestRequest {
   fee_pct: number;
   spread_pct: number;
   apply_risk_limits: boolean;
+  trend_filter: boolean;
+  trend_minutes: number;
 }
 
 export interface BacktestMetrics {

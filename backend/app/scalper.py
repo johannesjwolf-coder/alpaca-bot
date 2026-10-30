@@ -1,15 +1,19 @@
-"""Scalping-Engine für Krypto (Teststrategie, keine Gewinnzusage).
+"""Scalping-Engine für Krypto und US-Aktien/ETFs (Teststrategie, keine Gewinnzusage).
 
-Ablauf je Durchlauf (alle ``poll_interval_s`` Sekunden, für alle Symbole):
-1. Beste Geld-/Briefkurse aller Symbole in einem Abruf holen (nur
-   data.alpaca.markets bzw. DEMO).
+Ablauf je Durchlauf (alle ``poll_interval_s`` Sekunden bzw. bei neuen Kursen, für alle Symbole):
+1. Beste Geld-/Briefkurse holen: Krypto per Datenstrom oder Abfrage, Aktien/ETFs per
+   Abfrage (IEX) – Aktien/ETFs nur, solange die US-Börse offen ist.
 2. Mittelkurs je Symbol in Mikrokerzen von ``bar_seconds`` einsortieren.
 3. Läuft ein Trade: Nach dem Einstieg eine Stop-Limit-Schutzorder beim Broker
    hinterlegen (optional). Ausstieg bei Take-Profit oder maximaler Haltedauer:
    erst Schutzorder stornieren, dann verkaufen. Beim Stop-Loss greift die
    Schutzorder; bleibt sie unausgeführt, verkauft der Bot nach kurzer Frist selbst.
 4. Sonst: Jede abgeschlossene Mikrokerze höchstens einmal auswerten; Einstieg
-   nur bei einer Aufwärtskreuzung kurzer/langer Durchschnitt.
+   nur bei einer Aufwärtskreuzung kurzer/langer Durchschnitt und (optional) nur,
+   wenn der Kurs über einem steigenden Durchschnitt der Minutenkerzen liegt.
+5. Aktien/ETFs: keine Einstiege in den letzten Minuten vor Börsenschluss, offene
+   Trades kurz vor Schluss glattstellen (nie über Nacht). Krypto auf Wunsch nur,
+   solange die US-Börse geschlossen ist. Schutzorder beim Broker nur für Krypto.
 
 Alle Orders laufen über den gemeinsamen Orderweg (Risikoprüfung,
 client_order_id, keine blinden Wiederholungen). Bei Pause sendet der Bot keine
@@ -25,12 +29,18 @@ from datetime import datetime, timedelta, timezone
 from decimal import ROUND_DOWN, ROUND_FLOOR, Decimal
 from typing import TYPE_CHECKING
 
-from .broker.base import FINAL_ORDER_STATUSES, LOCAL_FINAL, Bar, BrokerError, Order, Quote, is_open_status
+from .broker.base import FINAL_ORDER_STATUSES, LOCAL_FINAL, Bar, BrokerError, Order, Quote, is_crypto, is_open_status
 from .db import iso, parse_iso
 from .orders import OrderBlocked, OrderFailed, OrderInput
 from .risk import available_to_sell
-from .settings_store import BotParams, get_bot_params, get_risk_limits
-from .strategy import evaluate
+from .settings_store import (
+    FLATTEN_BEFORE_CLOSE_MIN,
+    NO_ENTRY_BEFORE_CLOSE_MIN,
+    BotParams,
+    get_bot_params,
+    get_risk_limits,
+)
+from .strategy import TREND_SLOPE_BARS, evaluate, trend_ok
 
 if TYPE_CHECKING:  # pragma: no cover
     from .core import AppContext
@@ -187,24 +197,32 @@ class ScalpEngine:
             self.reset(params)
         rt = self.ctx.runtimes[mode]
         now = rt._now()
-        # Echtzeit-Datenstrom (nur PAPER, nur wenn verbunden); fehlende Kurse kommen per Abfrage.
+        is_open, to_close = self._session(mode, now)
+        # Aktien/ETFs nur bei offener US-Börse abfragen; Krypto rund um die Uhr.
+        active = [s for s in symbols if is_crypto(s) or is_open]
+        # Echtzeit-Datenstrom (nur PAPER, nur Krypto, nur wenn verbunden); fehlende Kurse kommen per Abfrage.
         stream = self.ctx.streams.market if mode == "PAPER" else None
         quotes: dict[str, Quote] = {}
         if stream is not None:
-            for s in symbols:
+            for s in active:
                 sq = stream.fresh_quote(s, now, QUOTE_MAX_AGE_S)
                 if sq is not None:
                     quotes[s] = sq
-        missing = [s for s in symbols if s not in quotes]
+        missing = [s for s in active if s not in quotes]
         failed = None
         if missing:
             try:
                 quotes.update(await rt.broker.get_quotes(missing))
             except BrokerError as exc:
                 failed = f"Kursabruf fehlgeschlagen ({exc.kind}): {exc.message}"
-        self.state["feed"] = "stream" if not missing else ("poll" if len(missing) == len(symbols) else "mixed")
+        self.state["feed"] = "stream" if not missing else ("poll" if len(missing) == len(active) else "mixed")
+        self.state["market_open"] = is_open
         for symbol in symbols:
             st = self.syms[symbol]
+            crypto = is_crypto(symbol)
+            if not crypto and not is_open:
+                await self._market_closed(mode, symbol, st, now)
+                continue
             q = quotes.get(symbol)
             fresh = q is not None and (now - q.at).total_seconds() <= QUOTE_MAX_AGE_S
             if q is not None:
@@ -223,10 +241,16 @@ class ScalpEngine:
                 st.view["status"] = failed or ("Kurs veraltet – keine Einstiege" if q else "Kein Kurs")
             trade = self.active_trade(mode, symbol)
             if trade is not None:
-                await self._manage(mode, params, symbol, st, trade, q if fresh else None, now)
+                await self._manage(mode, params, symbol, st, trade, q if fresh else None, now,
+                                   None if crypto else to_close)
             else:
                 st.view.pop("trade", None)
-                await self._maybe_enter(mode, params, symbol, st, q if fresh else None, now)
+                block = None
+                if not crypto and to_close is not None and to_close <= NO_ENTRY_BEFORE_CLOSE_MIN:
+                    block = f"Kurz vor Börsenschluss ({to_close:.0f} Min.) – keine neuen Einstiege"
+                elif crypto and is_open and params.crypto_outside_session_only and params.has_stocks:
+                    block = "US-Börse offen – Krypto pausiert, Aktien/ETFs handeln"
+                await self._maybe_enter(mode, params, symbol, st, q if fresh else None, now, block)
         self.state["symbols"] = {s: self.syms[s].view for s in symbols}
         open_trades = sum(1 for s in symbols if "trade" in self.syms[s].view)
         warm = [s for s in symbols if self.syms[s].view.get("bars_ready", 0) < self.syms[s].view.get("bars_needed", 1)]
@@ -235,8 +259,54 @@ class ScalpEngine:
             + (f" · Aufwärmen: {', '.join(warm)}" if warm else "")
         )
 
+    def _session(self, mode: str, now: datetime) -> tuple[bool | None, float | None]:
+        """US-Börse offen? und Minuten bis Börsenschluss (aus dem letzten Kontoabgleich)."""
+        snap = self.ctx.runtimes[mode].snapshot
+        if snap is None:
+            return None, None
+        clock = snap.clock
+        if not clock.is_open or clock.next_close is None:
+            return clock.is_open, None
+        return True, (clock.next_close - now).total_seconds() / 60
+
+    async def _market_closed(self, mode: str, symbol: str, st: _SymState, now: datetime) -> None:
+        """Aktie/ETF bei geschlossener Börse: keine Kurse, keine Orders – nur Ein-/Ausstiege abgleichen."""
+        if "quote" in st.view:
+            st.view["quote"]["fresh"] = False
+        trade = self.active_trade(mode, symbol)
+        if trade is not None and trade["status"] in ("entering", "exiting"):
+            await self.finalize(mode, trade, now)
+            trade = self.active_trade(mode, symbol)
+        snap = self.ctx.runtimes[mode].snapshot
+        nxt = snap.clock.next_open if snap is not None else None
+        when = f" – Eröffnung {iso(nxt)}" if nxt else ""
+        if trade is not None and trade["status"] == "open":
+            st.view["status"] = f"US-Börse geschlossen – Position wird nach Eröffnung beendet{when}"
+        else:
+            st.view.pop("trade", None)
+            st.view["status"] = f"US-Börse geschlossen{when}"
+
+    async def _trend(self, mode: str, params: BotParams, symbol: str, price: float, now: datetime) -> tuple[bool, str]:
+        """Trendfilter auf 1-Minuten-Kerzen (zwischengespeichert); Aktien nur Kerzen der laufenden Sitzung."""
+        rt = self.ctx.runtimes[mode]
+        n = params.trend_minutes
+        try:
+            bars, _, _ = await self.ctx.market.fetch(rt, symbol, n + TREND_SLOPE_BARS + 30, "1Min")
+        except BrokerError as exc:
+            return False, f"Minutenkerzen nicht verfügbar ({exc.message})"
+        done = [b for b in bars if b.t + timedelta(minutes=1) <= now]
+        if not is_crypto(symbol) and rt.broker.uses_sessions:
+            try:
+                start = await rt.broker.get_session_open(now)
+            except BrokerError:
+                start = None
+            if start is not None:
+                done = [b for b in done if b.t >= start]
+        return trend_ok([b.c for b in done], n, price)
+
     # ------------------------------------------------------------ Einstieg
-    async def _maybe_enter(self, mode: str, params: BotParams, symbol: str, st: _SymState, quote: Quote | None, now: datetime) -> None:
+    async def _maybe_enter(self, mode: str, params: BotParams, symbol: str, st: _SymState, quote: Quote | None,
+                           now: datetime, block: str | None = None) -> None:
         bars = st.bars.bars()
         needed = params.long_window + 1
         st.view["bars_ready"] = min(len(bars), needed)
@@ -256,15 +326,34 @@ class ScalpEngine:
             "sma_short": sig.sma_short, "sma_long": sig.sma_long, "signal": sig.kind,
         }
         if sig.kind != "buy":
-            st.view["status"] = f"Beobachte – {sig.reason}"
+            st.view["status"] = block or f"Beobachte – {sig.reason}"
             return
         extra = dict(bar_time=iso(latest.t), close=latest.c,
                      sma_short=round(sig.sma_short or 0, 4), sma_long=round(sig.sma_long or 0, 4))
+        if block:
+            self._decide(mode, symbol, "buy", "skip", f"{sig.reason}; {block}", **extra)
+            st.view["status"] = block
+            return
         if quote is None:
             self._decide(mode, symbol, "buy", "skip", f"{sig.reason}; kein frischer Kurs – kein Einstieg", **extra)
             return
+        crypto = is_crypto(symbol)
+        if not crypto:
+            # Aktien/ETFs: Spread-Grenze hier prüfen (der Orderweg schätzt Aktien über den letzten Trade).
+            limit = get_risk_limits(self._db(), mode).max_spread_pct
+            if quote.spread_pct > limit + 1e-12:
+                why = f"Spread {quote.spread_pct:.3f} % über der Grenze von {limit:g} %"
+                self._decide(mode, symbol, "buy", "blocked", f"{sig.reason}; Einstieg gesperrt – {why}", **extra)
+                st.view["status"] = f"Einstieg gesperrt – {why}"
+                return
+        if params.trend_filter:
+            ok, why = await self._trend(mode, params, symbol, quote.mid, now)
+            if not ok:
+                self._decide(mode, symbol, "buy", "skip", f"{sig.reason}; Trendfilter: {why}", **extra)
+                st.view["status"] = f"Signal ausgelassen – Trendfilter: {why}"
+                return
         inp = OrderInput(
-            symbol=symbol, side="buy", time_in_force="gtc",
+            symbol=symbol, side="buy", time_in_force="gtc" if crypto else "day",
             notional=Decimal(str(params.order_value)).quantize(Decimal("0.01"), rounding=ROUND_DOWN),
         )
         try:
@@ -284,23 +373,25 @@ class ScalpEngine:
         self._db().execute(
             "INSERT INTO trades (mode, symbol, status, entry_cid, fee_pct, created_at, updated_at) "
             "VALUES (?, ?, 'entering', ?, ?, ?, ?)",
-            (mode, symbol, res["order"]["client_order_id"], params.fee_pct, ts, ts),
+            (mode, symbol, res["order"]["client_order_id"], params.profile(symbol).fee_pct, ts, ts),
         )
         self._decide(mode, symbol, "buy", "order",
                      f"{sig.reason}; Einstieg {params.order_value:g} USD gesendet (Spread {quote.spread_pct:.3f} %)", **extra)
         st.view["status"] = "Einstieg gesendet – warte auf Ausführung"
 
     # ------------------------------------------------------------ Trades
-    async def _manage(self, mode: str, params: BotParams, symbol: str, st: _SymState, trade: dict, quote: Quote | None, now: datetime) -> None:
+    async def _manage(self, mode: str, params: BotParams, symbol: str, st: _SymState, trade: dict, quote: Quote | None,
+                      now: datetime, to_close: float | None = None) -> None:
         if trade["status"] in ("entering", "exiting"):
             await self.finalize(mode, trade, now)
             trade = self._trade(trade["id"]) or trade
             if trade["status"] != "open":
                 return
-        if params.broker_stop and not trade.get("stop_cid"):
+        # Schutzorder beim Broker nur für Krypto (Aktien/ETFs: Bruchstücke, Glattstellen vor Börsenschluss).
+        if params.broker_stop and is_crypto(symbol) and not trade.get("stop_cid"):
             await self._place_stop(mode, params, trade, now)
             trade = self._trade(trade["id"]) or trade
-        await self._check_exit(mode, params, symbol, st, trade, quote, now)
+        await self._check_exit(mode, params, symbol, st, trade, quote, now, to_close)
 
     async def finalize(self, mode: str, trade: dict, now: datetime) -> None:
         """Nur lesend: Ein-/Ausstiegs- und Schutzorders abgleichen (läuft auch bei pausiertem Bot)."""
@@ -350,6 +441,7 @@ class ScalpEngine:
 
     def _open_trade(self, mode: str, trade: dict, order: Order, now: datetime) -> None:
         params = get_bot_params(self._db(), mode)
+        prof = params.profile(trade["symbol"])
         entry = order.filled_avg_price or 0.0
         entry_time = order.filled_at or now
         self._update(
@@ -358,15 +450,15 @@ class ScalpEngine:
             entry_time=iso(entry_time),
             entry_qty=order.filled_qty,
             entry_price=entry,
-            stop_price=round(entry * (1 - params.stop_loss_pct / 100), 6),
-            target_price=round(entry * (1 + params.take_profit_pct / 100), 6),
-            deadline=iso(entry_time + timedelta(minutes=params.max_hold_min)),
+            stop_price=round(entry * (1 - prof.stop_loss_pct / 100), 6),
+            target_price=round(entry * (1 + prof.take_profit_pct / 100), 6),
+            deadline=iso(entry_time + timedelta(minutes=prof.max_hold_min)),
         )
         self._db().add_event(
             mode, "info", "trade",
             f"Einstieg ausgeführt: {order.filled_qty:g} {trade['symbol']} zu {entry:.2f}. "
-            f"Stop-Loss −{params.stop_loss_pct:g} %, Take-Profit +{params.take_profit_pct:g} %, "
-            f"max. {params.max_hold_min:g} Min.",
+            f"Stop-Loss −{prof.stop_loss_pct:g} %, Take-Profit +{prof.take_profit_pct:g} %, "
+            f"max. {prof.max_hold_min:g} Min.",
         )
 
     def _close_trade(self, mode: str, trade: dict, order: Order, now: datetime) -> None:
@@ -481,7 +573,8 @@ class ScalpEngine:
         return {"filled": "filled", "gone": "free"}.get(state, "wait")
 
     # ------------------------------------------------------------ Ausstieg
-    async def _check_exit(self, mode: str, params: BotParams, symbol: str, st: _SymState, trade: dict, quote: Quote | None, now: datetime) -> None:
+    async def _check_exit(self, mode: str, params: BotParams, symbol: str, st: _SymState, trade: dict, quote: Quote | None,
+                          now: datetime, to_close: float | None = None) -> None:
         entry = trade["entry_price"] or 0.0
         deadline = parse_iso(trade["deadline"])
         info = {
@@ -500,6 +593,8 @@ class ScalpEngine:
                 reason = "Take-Profit"
         if reason is None and deadline is not None and now >= deadline:
             reason = "Max. Haltedauer"
+        if reason is None and to_close is not None and to_close <= FLATTEN_BEFORE_CLOSE_MIN:
+            reason = "Börsenschluss"
 
         # Schutzorder bereits ausgeführt? (zuerst aus dem Abgleich, ohne Extra-Anfrage)
         if trade.get("stop_cid"):
@@ -579,7 +674,7 @@ class ScalpEngine:
             return
         # Gebühren können den Bestand leicht verringern → höchstens den verfügbaren Bestand verkaufen.
         qty = _q9(min(trade["entry_qty"] or available, available))
-        inp = OrderInput(symbol=symbol, side="sell", qty=qty, time_in_force="gtc")
+        inp = OrderInput(symbol=symbol, side="sell", qty=qty, time_in_force="gtc" if is_crypto(symbol) else "day")
         attempt = int(trade["exit_attempts"] or 0)
         bid = f" (Geldkurs {quote.bid:.2f})" if quote else ""
         try:

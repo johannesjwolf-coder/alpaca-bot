@@ -15,7 +15,7 @@ from app.settings_store import BotParams, set_bot_params
 from app.streams import SOURCE_STREAM, CryptoQuoteStream, StreamError, TradeUpdateStream, _NoRedirectConnect
 
 KEY, SECRET = "PKTESTKEYID", "testsecretvalue"  # wie env_keys in conftest
-SCALP = dict(strategy="scalp", symbol="BTC/USD", symbols=["BTC/USD"], short_window=2, long_window=4, bar_seconds=5,
+SCALP = dict(strategy="scalp", trend_filter=False, symbol="BTC/USD", symbols=["BTC/USD"], short_window=2, long_window=4, bar_seconds=5,
              poll_interval_s=1, order_value=20, broker_stop=False)
 DOWN_UP = [100, 99.8, 99.6, 99.4, 99.2, 99.0, 99.9, 100.0]
 
