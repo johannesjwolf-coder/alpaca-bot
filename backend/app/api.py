@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import platform
 import sys
+import uuid
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -194,7 +195,7 @@ async def bars(request: Request, symbol: str = Query("SPY", max_length=10)) -> d
     rt = ctx.runtime
     params = get_bot_params(ctx.db, ctx.mode)
     res = await ctx.market.bars(rt, symbol, limit=240, max_age_s=params.max_bar_age_s)
-    if symbol.strip().upper() == params.symbol:
+    if symbol.strip().upper() == params.symbol and params.strategy == "sma":
         session_open = None
         if rt.broker.uses_sessions:
             try:
@@ -274,7 +275,7 @@ class CloseBody(BaseModel):
     confirm: bool = False
 
 
-@router.post("/positions/{symbol}/close")
+@router.post("/positions/{symbol:path}/close")
 async def position_close(symbol: str, body: CloseBody, request: Request) -> dict:
     ctx = ctx_of(request)
     require_mode(ctx, body.expected_mode)
@@ -375,16 +376,73 @@ async def bot_pause(request: Request) -> dict:
 @router.get("/bot")
 async def bot_state(request: Request, limit: int = Query(50, ge=1, le=500)) -> dict:
     ctx = ctx_of(request)
+    params = get_bot_params(ctx.db, ctx.mode)
     return {
         "mode": ctx.mode,
         "state": ctx.bot.state(),
-        "params": get_bot_params(ctx.db, ctx.mode).model_dump(),
+        "params": params.model_dump(),
+        "roundtrip_cost_pct": params.roundtrip_cost_pct,
+        "defaults": {
+            "scalp": BotParams().model_dump(),
+            "sma": BotParams(strategy="sma", symbol="SPY", short_window=10, long_window=30, order_value=20).model_dump(),
+        },
+        "trades": ctx.bot.scalper.list_trades(ctx.mode, 50),
+        "summary": ctx.bot.scalper.summary(ctx.mode),
         "decisions": ctx.db.list_decisions(ctx.mode, limit),
         "disclaimer": (
             "Beispielstrategie (Kreuzung zweier gleitender Durchschnitte auf abgeschlossenen Minutenkerzen) "
             "nur zum Prüfen der Automatik – weder validiert noch auf Gewinn ausgelegt."
         ),
     }
+
+
+@router.post("/emergency-stop")
+async def emergency_stop(body: ModeOnly, request: Request) -> dict:
+    """Not-Aus: Bot stoppen, alle offenen Orders stornieren, alle Positionen schliessen.
+
+    Das Schliessen sendet Verkaufsorders und braucht im PAPER-Modus die Orderfreigabe.
+    """
+    ctx = ctx_of(request)
+    require_mode(ctx, body.expected_mode)
+    mode = ctx.mode
+    await ctx.bot.pause("Not-Aus")
+    ctx.db.add_event(mode, "warning", "system", "NOT-AUS ausgelöst.")
+    result: dict = {"mode": mode, "bot_paused": True, "canceled": [], "closed": [], "not_closed": []}
+    try:
+        result["canceled"] = (await ctx.orders.cancel_all_open(mode))["results"]
+    except BrokerError as exc:
+        result["cancel_error"] = exc.message
+    rt = ctx.runtimes[mode]
+    if not await rt.sync() or rt.snapshot is None:
+        result["error"] = "Brokerzustand nicht abrufbar – Positionen konnten nicht geschlossen werden."
+        return result
+    can_sell = mode == "DEMO" or ctx.orders_enabled(mode)
+    for pos in rt.snapshot.positions:
+        if pos.qty <= 0:
+            continue
+        if not can_sell:
+            result["not_closed"].append({"symbol": pos.symbol, "reason": "Paper-Orderfreigabe ist aus"})
+            continue
+        try:
+            res = await ctx.orders.close_position(mode, pos.symbol, f"kill:{uuid.uuid4().hex}")
+            result["closed"].append({"symbol": pos.symbol, "status": res["order"]["status"]})
+        except OrderBlocked as exc:
+            reasons = [c["detail"] for c in exc.preview.get("checks", []) if c["blocking"] and not c["ok"]]
+            result["not_closed"].append({"symbol": pos.symbol, "reason": "; ".join(reasons) or "gesperrt"})
+        except (OrderFailed, BrokerError) as exc:
+            msg = exc.error.message if isinstance(exc, OrderFailed) else exc.message
+            result["not_closed"].append({"symbol": pos.symbol, "reason": msg})
+    for trade in ctx.db.query("SELECT id FROM trades WHERE mode=? AND status='open'", (mode,)):
+        ctx.db.execute(
+            "UPDATE trades SET status='closed', exit_reason='Not-Aus', note=?, updated_at=? WHERE id=?",
+            ("Durch Not-Aus geschlossen – Ergebnis siehe Auftragstabelle", iso(ctx._now()), trade["id"]),
+        )
+    ctx.db.add_event(
+        mode, "warning", "system",
+        f"Not-Aus: {len(result['canceled'])} Order(s) storniert, {len(result['closed'])} Position(en) geschlossen, "
+        f"{len(result['not_closed'])} nicht geschlossen.",
+    )
+    return result
 
 
 @router.get("/events")

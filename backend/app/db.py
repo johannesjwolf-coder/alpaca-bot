@@ -79,6 +79,35 @@ CREATE TABLE IF NOT EXISTS decisions (
 );
 CREATE INDEX IF NOT EXISTS ix_decisions_mode ON decisions (mode, id);
 
+-- Abgeschlossene und laufende Trades (Einstieg + Ausstieg) der Scalping-Engine
+CREATE TABLE IF NOT EXISTS trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mode TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    status TEXT NOT NULL,           -- entering | open | exiting | closed | canceled
+    entry_cid TEXT,
+    entry_time TEXT,
+    entry_qty REAL,
+    entry_price REAL,
+    stop_price REAL,
+    target_price REAL,
+    deadline TEXT,
+    exit_cid TEXT,
+    exit_time TEXT,
+    exit_qty REAL,
+    exit_price REAL,
+    exit_reason TEXT,
+    exit_attempts INTEGER NOT NULL DEFAULT 0,
+    gross_pnl REAL,
+    fees_est REAL,
+    net_pnl REAL,
+    fee_pct REAL,
+    note TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_trades_mode ON trades (mode, id);
+
 -- Simulierter Broker für DEMO (entspricht dem Server-Zustand bei Alpaca)
 CREATE TABLE IF NOT EXISTS demo_account (
     id INTEGER PRIMARY KEY CHECK (id = 1),

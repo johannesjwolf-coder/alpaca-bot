@@ -31,6 +31,8 @@ from .base import (
     Order,
     OrderRequest,
     Position,
+    Quote,
+    is_crypto,
 )
 
 DEMO_INITIAL_CASH = 10_000.0
@@ -44,7 +46,11 @@ DEMO_ASSETS: dict[str, tuple[str, float, bool]] = {
     "NVDA": ("DEMO NVIDIA", 120.0, True),
     "F": ("DEMO Ford Motor", 11.5, True),
     "XYZW": ("DEMO nicht handelbar", 25.0, False),
+    # Krypto (24/7, stärkere Schwankungen)
+    "BTC/USD": ("DEMO Bitcoin", 68_000.0, True),
+    "ETH/USD": ("DEMO Ether", 3_400.0, True),
 }
+DEMO_SPREAD_PCT = 0.02  # simulierter Abstand zwischen Geld- und Briefkurs in %
 PARTIAL_FILL_DELAY_S = 1.0
 FINAL_FILL_DELAY_S = 3.0
 
@@ -59,7 +65,17 @@ def demo_price(symbol: str, ts: float) -> float:
         + 0.0030 * math.sin(2 * math.pi * m / 17 + 2 * phase)
         + 0.0012 * math.sin(2 * math.pi * m / 4.3 + 3 * phase)
     )
+    if is_crypto(symbol):
+        # Krypto schwankt stärker und schneller (für Scalping-Tests auf Sekundenbasis).
+        wave = 1.6 * wave + 0.0020 * math.sin(2 * math.pi * m / 1.3 + 4 * phase)
     return round(base * (1 + wave), 2)
+
+
+def demo_quote_prices(symbol: str, ts: float) -> tuple[float, float]:
+    """(bid, ask) um den Demo-Kurs mit festem Spread."""
+    mid = demo_price(symbol, ts)
+    half = mid * DEMO_SPREAD_PCT / 200
+    return round(mid - half, 2), round(mid + half, 2)
 
 
 def demo_bar(symbol: str, minute_start: datetime) -> Bar:
@@ -163,7 +179,8 @@ class DemoBroker(Broker):
             for r in rows:
                 order = dict(r)
                 age = (now - parse_iso(order["created_at"])).total_seconds()
-                price = demo_price(order["symbol"], now.timestamp())
+                bid, ask = demo_quote_prices(order["symbol"], now.timestamp())
+                price = ask if order["side"] == "buy" else bid  # Käufe zum Brief-, Verkäufe zum Geldkurs
                 if order["notional"] is not None and order["qty"] is None:
                     if age < PARTIAL_FILL_DELAY_S:
                         continue
@@ -238,11 +255,12 @@ class DemoBroker(Broker):
             )
         name, _, fractionable = info
         tradable = symbol != "XYZW"
+        crypto = is_crypto(symbol)
         return Asset(
             symbol=symbol,
             name=name,
-            asset_class="us_equity",
-            exchange="DEMO",
+            asset_class="crypto" if crypto else "us_equity",
+            exchange="CRYPTO" if crypto else "DEMO",
             status="active",
             tradable=tradable,
             fractionable=fractionable,
@@ -362,3 +380,10 @@ class DemoBroker(Broker):
         if symbol not in DEMO_ASSETS:
             return None
         return LatestPrice(price=self._price(symbol), at=self._now(), source="DEMO-Kurs")
+
+    async def get_quote(self, symbol: str) -> Quote | None:
+        if symbol not in DEMO_ASSETS:
+            return None
+        now = self._now()
+        bid, ask = demo_quote_prices(symbol, now.timestamp())
+        return Quote(symbol=symbol, bid=bid, ask=ask, at=now, source="DEMO-Quote (simulierter Spread)")

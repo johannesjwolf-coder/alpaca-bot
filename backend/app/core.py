@@ -96,7 +96,8 @@ class AppContext:
         # Regelmässiger Abgleich nur für den aktiven Modus (schont API-Limits).
         while True:
             try:
-                await self.runtime.sync(max_age_s=self.settings.sync_interval_s / 2)
+                if await self.runtime.sync(max_age_s=self.settings.sync_interval_s / 2):
+                    await self.bot.scalper.finalize_all(self.mode)
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001

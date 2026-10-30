@@ -62,7 +62,11 @@ class FakeAlpaca:
                      "status": "active", "tradable": True, "fractionable": False},
             "DEAD": {"symbol": "DEAD", "name": "Inaktiv", "class": "us_equity", "exchange": "NYSE",
                      "status": "inactive", "tradable": False, "fractionable": False},
+            # Krypto wird über "BTCUSD" nachgeschlagen, Alpaca antwortet mit "BTC/USD"
+            "BTCUSD": {"symbol": "BTC/USD", "name": "Bitcoin", "class": "crypto", "exchange": "CRYPTO",
+                       "status": "active", "tradable": True, "fractionable": True, "min_order_size": "0.0001"},
         }
+        self.crypto_quotes: dict[str, dict] = {}
         self.prices = {"SPY": 10.0, "BRK.A": 600000.0}
         self.bars: dict[str, list[dict]] = {}
         self.calls: list[tuple[str, str, dict]] = []
@@ -72,19 +76,28 @@ class FakeAlpaca:
         self.inject: dict[tuple[str, str], list] = {}
 
     # ----------------------------------------------------------- helpers
-    def add_position(self, symbol: str, qty: float, price: float, avg: float | None = None) -> None:
+    def add_position(self, symbol: str, qty: float, price: float, avg: float | None = None, asset_class: str = "us_equity") -> None:
         self.positions.append(
             {
-                "symbol": symbol, "qty": str(qty), "qty_available": str(qty), "side": "long",
+                "symbol": symbol,
+                "asset_class": asset_class, "qty": str(qty), "qty_available": str(qty), "side": "long",
                 "avg_entry_price": str(avg or price), "market_value": str(qty * price),
                 "cost_basis": str(qty * (avg or price)), "unrealized_pl": str(qty * (price - (avg or price))),
-                "current_price": str(price), "asset_class": "us_equity",
+                "current_price": str(price),
             }
         )
+
+    def set_quote(self, symbol: str, bid: float, ask: float, at: datetime | None = None) -> None:
+        self.crypto_quotes[symbol] = {"t": (at or self.clock()).isoformat().replace("+00:00", "Z"), "bp": bid, "ap": ask}
+
+    def fill(self, order: dict, qty: float, price: float) -> None:
+        order.update(status="filled", filled_qty=str(qty), filled_avg_price=str(price),
+                     filled_at=self.clock().isoformat().replace("+00:00", "Z"))
 
     def add_order(self, **kw) -> dict:
         oid = str(uuid.uuid4())
         o = {
+            "asset_class": "crypto" if "/" in str(kw.get("symbol")) else "us_equity",
             "id": oid, "client_order_id": kw.get("client_order_id", f"ext-{oid[:8]}"), "symbol": kw["symbol"],
             "side": kw["side"], "type": "market", "time_in_force": kw.get("time_in_force", "day"),
             "qty": kw.get("qty"), "notional": kw.get("notional"), "filled_qty": kw.get("filled_qty", "0"),
@@ -126,6 +139,17 @@ class FakeAlpaca:
                     return result
         host = request.url.host
         q = parse_qs(request.url.query.decode())
+        if host == "data.alpaca.markets" and path.startswith("/v1beta3/crypto/us/"):
+            sym = q["symbols"][0]
+            if path.endswith("/latest/quotes"):
+                quotes = {sym: self.crypto_quotes[sym]} if sym in self.crypto_quotes else {}
+                return httpx.Response(200, json={"quotes": quotes})
+            if path.endswith("/latest/trades"):
+                cq = self.crypto_quotes.get(sym)
+                trades = {sym: {"t": cq["t"], "p": (cq["bp"] + cq["ap"]) / 2}} if cq else {}
+                return httpx.Response(200, json={"trades": trades})
+            if path.endswith("/bars"):
+                return httpx.Response(200, json={"bars": {sym: self.bars.get(sym, [])}, "next_page_token": None})
         if host == "data.alpaca.markets":
             sym = path.split("/")[3]
             if path.endswith("/bars"):
@@ -151,7 +175,8 @@ class FakeAlpaca:
         if path == "/v2/positions":
             return httpx.Response(200, json=self.positions)
         if path.startswith("/v2/assets/"):
-            sym = path.rsplit("/", 1)[1]
+            # Rohpfad wie gesendet (z. B. BTC%2FUSD bleibt kodiert)
+            sym = request.url.raw_path.decode().split("?")[0][len("/v2/assets/"):]
             a = self.assets.get(sym)
             return httpx.Response(200, json=a) if a else httpx.Response(404, json={"message": "asset not found"})
         if path == "/v2/orders" and method == "GET":

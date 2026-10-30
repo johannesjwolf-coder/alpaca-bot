@@ -13,10 +13,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .broker.base import Account, Order, Position
-from .db import Database, iso
+from .db import Database, iso, parse_iso
 from .runtime import Snapshot
 from .settings_store import RiskLimits
 from .timeutil import trading_day, utcnow
@@ -106,6 +106,33 @@ class RiskEngine:
             "reset_rule": RESET_RULE,
         }
 
+    def buys_since(self, mode: str, since: datetime) -> int:
+        """Kauforders seit ``since`` (ohne abgelehnte bzw. nie angekommene)."""
+        row = self.db.query_one(
+            "SELECT COUNT(*) AS n FROM orders WHERE mode=? AND side='buy' AND created_at>=? "
+            "AND status NOT IN ('local_failed', 'local_not_received')",
+            (mode, iso(since)),
+        )
+        return int(row["n"]) if row else 0
+
+    def buys_today(self, mode: str) -> int:
+        row = self.db.query_one(
+            "SELECT COUNT(*) AS n FROM orders WHERE mode=? AND side='buy' AND trading_day=? "
+            "AND status NOT IN ('local_failed', 'local_not_received')",
+            (mode, trading_day(self._now())),
+        )
+        return int(row["n"]) if row else 0
+
+    def loss_pause(self, mode: str) -> dict | None:
+        """Aktive Kaufpause nach Verlustserie (gesetzt von der Scalping-Engine) oder None."""
+        state = self.db.get(mode, "loss_pause")
+        if not state:
+            return None
+        until = parse_iso(state.get("until"))
+        if until is None or until <= self._now():
+            return None
+        return state
+
     def orders_today(self, mode: str) -> int:
         row = self.db.query_one(
             "SELECT COUNT(*) AS n FROM orders WHERE mode=? AND trading_day=?",
@@ -144,6 +171,7 @@ class RiskEngine:
         symbol: str,
         est_value: float | None,
         qty: float | None,
+        spread_pct: float | None = None,
     ) -> list[Check]:
         checks: list[Check] = []
         orders_today = self.orders_today(mode)
@@ -200,6 +228,40 @@ class RiskEngine:
                     f"{orders_today} heute (max. {limits.max_orders_per_day})",
                 )
             )
+            last_hour = self.buys_since(mode, self._now() - timedelta(hours=1))
+            checks.append(
+                Check(
+                    "Einstiege pro Stunde",
+                    last_hour + 1 <= limits.max_buys_per_hour,
+                    f"{last_hour} in der letzten Stunde (max. {limits.max_buys_per_hour})",
+                )
+            )
+            today = self.buys_today(mode)
+            checks.append(
+                Check(
+                    "Einstiege pro Tag",
+                    today + 1 <= limits.max_buys_per_day,
+                    f"{today} heute (max. {limits.max_buys_per_day})",
+                )
+            )
+            pause = self.loss_pause(mode)
+            checks.append(
+                Check(
+                    "Pause nach Verlustserie",
+                    pause is None,
+                    "keine Pause aktiv"
+                    if pause is None
+                    else f"Käufe pausiert bis {pause['until']} ({pause.get('reason', 'Verlustserie')})",
+                )
+            )
+            if spread_pct is not None:
+                checks.append(
+                    Check(
+                        "Spread",
+                        spread_pct <= limits.max_spread_pct + 1e-12,
+                        f"{spread_pct:.3f} % (max. {limits.max_spread_pct:g} %)",
+                    )
+                )
             acct = snap.account
             own = acct.cash
             if acct.non_marginable_buying_power is not None:

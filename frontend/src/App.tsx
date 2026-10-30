@@ -6,6 +6,7 @@ import { Diagnostics } from "./components/Diagnostics";
 import { OrderForm } from "./components/OrderForm";
 import { PriceChart } from "./components/PriceChart";
 import { SettingsPanel } from "./components/SettingsPanel";
+import { EmergencyButton } from "./components/EmergencyButton";
 import { StatusBadges } from "./components/StatusBadges";
 import { usePoll } from "./hooks";
 import type { Dashboard as DashboardData, Status } from "./types";
@@ -63,6 +64,7 @@ export default function App() {
             Alpaca Paper Bot
           </div>
           <StatusBadges status={status.data} backendError={status.error} />
+          {status.data && <EmergencyButton status={status.data} onDone={refresh} />}
           <nav className="tabs" aria-label="Bereiche">
             {TABS.map(([k, label]) => (
               <button
@@ -89,7 +91,7 @@ export default function App() {
         )}
         {status.data && tab === "overview" && (
           <Dashboard data={dash.data} error={dash.error} loading={dash.loading} reload={dash.reload}>
-            <PriceChart key={status.data.mode} mode={status.data.mode} defaultSymbol="SPY" />
+            <PriceChart key={status.data.mode} mode={status.data.mode} defaultSymbol="BTC/USD" />
           </Dashboard>
         )}
         {status.data && tab === "trade" && <OrderForm status={status.data} onDone={refresh} />}

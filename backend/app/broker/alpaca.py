@@ -32,7 +32,8 @@ from ..config import (
 )
 from ..timeutil import NEW_YORK
 from .base import (
-    SYMBOL_RE,
+    CRYPTO_SYMBOL_RE,
+    STOCK_SYMBOL_RE,
     UUID_RE,
     Account,
     Asset,
@@ -44,6 +45,9 @@ from .base import (
     Order,
     OrderRequest,
     Position,
+    Quote,
+    canonical_symbol,
+    is_crypto,
 )
 
 log = logging.getLogger("alpaca_bot.broker")
@@ -52,6 +56,9 @@ BASES = {"trading": PAPER_TRADING_BASE_URL, "data": MARKET_DATA_BASE_URL}
 HOSTS = {"trading": PAPER_TRADING_HOST, "data": MARKET_DATA_HOST}
 ALLOWED_HOSTS = frozenset(HOSTS.values())
 DATA_FEED = "iex"
+CRYPTO_LOCATION = "us"
+# Erlaubte API-Pfade je Host. Krypto-Marktdaten liegen bei Alpaca unter /v1beta3.
+PATH_PREFIXES = {"trading": ("/v2/",), "data": ("/v2/stocks/", f"/v1beta3/crypto/{CRYPTO_LOCATION}/")}
 
 DEFAULT_TIMEOUT = httpx.Timeout(connect=5.0, read=10.0, write=10.0, pool=5.0)
 READ_ATTEMPTS = 3
@@ -156,7 +163,7 @@ def auth_from_env() -> AuthStrategy:
 def build_url(kind: str, path: str) -> httpx.URL:
     if kind not in BASES:
         raise BrokerError("invalid_url", f"Unbekanntes Ziel: {kind}")
-    if not path.startswith("/v2/") or any(t in path for t in ("..", "//", "\\", "?", "#", "@")):
+    if not path.startswith(PATH_PREFIXES[kind]) or any(t in path for t in ("..", "//", "\\", "?", "#", "@")):
         raise BrokerError("invalid_url", "Ungültiger API-Pfad")
     url = httpx.URL(BASES[kind] + path)
     validate_url(url, kind)
@@ -212,9 +219,16 @@ def _rfc3339(dt: datetime) -> str:
 
 
 def _check_symbol(symbol: str) -> str:
-    if not SYMBOL_RE.match(symbol):
-        raise BrokerError("unprocessable", f"Ungültiges Symbol: {symbol!r}")
+    """Aktiensymbol für einen URL-Pfad (Krypto wird als Query-Parameter übergeben)."""
+    if not STOCK_SYMBOL_RE.match(symbol):
+        raise BrokerError("unprocessable", f"Ungültiges Aktiensymbol: {symbol!r}")
     return quote(symbol, safe=".")
+
+
+def _check_crypto(symbol: str) -> str:
+    if not CRYPTO_SYMBOL_RE.match(symbol):
+        raise BrokerError("unprocessable", f"Ungültiges Krypto-Symbol: {symbol!r}")
+    return symbol
 
 
 def _error_message(resp: httpx.Response) -> str:
@@ -247,7 +261,7 @@ def parse_order(d: dict) -> Order:
     return Order(
         id=str(d["id"]),
         client_order_id=str(d.get("client_order_id") or ""),
-        symbol=str(d.get("symbol") or ""),
+        symbol=canonical_symbol(str(d.get("symbol") or ""), d.get("asset_class")),
         side=str(d.get("side") or ""),
         type=str(d.get("type") or d.get("order_type") or "market"),
         time_in_force=str(d.get("time_in_force") or "day"),
@@ -268,7 +282,7 @@ def parse_position(d: dict) -> Position:
     qty = _f(d.get("qty")) or 0.0
     qty_av = _f(d.get("qty_available"))
     return Position(
-        symbol=str(d.get("symbol") or ""),
+        symbol=canonical_symbol(str(d.get("symbol") or ""), d.get("asset_class")),
         qty=qty,
         qty_available=qty if qty_av is None else qty_av,
         side=str(d.get("side") or "long"),
@@ -475,17 +489,35 @@ class AlpacaPaperBroker(Broker):
         return self._session_cache[key]
 
     async def get_asset(self, symbol: str) -> Asset:
-        d = await self._request("GET", "trading", f"/v2/assets/{_check_symbol(symbol)}")
+        if is_crypto(symbol):
+            _check_crypto(symbol)
+            base = symbol.split("/")[0]
+            # Alpaca akzeptiert für Krypto je nach Version "BTCUSD" oder "BTC/USD" (kodiert).
+            d = None
+            for candidate in (f"{base}USD", quote(symbol, safe="")):
+                try:
+                    d = await self._request("GET", "trading", f"/v2/assets/{candidate}")
+                    break
+                except BrokerError as exc:
+                    if exc.kind != "not_found":
+                        raise
+            if d is None:
+                raise BrokerError("not_found", f"Krypto-Instrument {symbol} beim Broker nicht gefunden", status_code=404)
+        else:
+            d = await self._request("GET", "trading", f"/v2/assets/{_check_symbol(symbol)}")
+        asset_class = str(d.get("class") or "")
         return Asset(
-            symbol=str(d.get("symbol") or symbol),
+            symbol=canonical_symbol(str(d.get("symbol") or symbol), asset_class),
             name=str(d.get("name") or ""),
-            asset_class=str(d.get("class") or ""),
+            asset_class=asset_class,
             exchange=str(d.get("exchange") or ""),
             status=str(d.get("status") or ""),
             tradable=bool(d.get("tradable")),
-            fractionable=bool(d.get("fractionable")),
+            fractionable=bool(d.get("fractionable")) or asset_class == "crypto",
             shortable=bool(d.get("shortable")),
             marginable=bool(d.get("marginable")),
+            min_order_size=_f(d.get("min_order_size")),
+            min_trade_increment=_f(d.get("min_trade_increment")),
         )
 
     async def list_positions(self) -> list[Position]:
@@ -541,33 +573,71 @@ class AlpacaPaperBroker(Broker):
             raise BrokerError("unprocessable", "Ungültige Order-ID")
         await self._request("DELETE", "trading", f"/v2/orders/{order_id}")
 
-    async def get_bars(self, symbol: str, limit: int) -> list[Bar]:
-        now = datetime.now(timezone.utc)
-        params = {
-            "timeframe": "1Min",
-            "start": _rfc3339(now - timedelta(days=5)),
-            "limit": max(1, min(limit, 1000)),
-            "feed": DATA_FEED,
-            "adjustment": "raw",
-            "sort": "desc",
-        }
-        data = await self._request("GET", "data", f"/v2/stocks/{_check_symbol(symbol)}/bars", params=params)
+    @staticmethod
+    def _parse_bars(raw: list[dict]) -> list[Bar]:
         bars = []
-        for b in (data or {}).get("bars") or []:
+        for b in raw or []:
             t = _dt(b.get("t"))
             if t is None:
                 continue
-            bars.append(Bar(t=t, o=_f(b.get("o")) or 0, h=_f(b.get("h")) or 0, l=_f(b.get("l")) or 0, c=_f(b.get("c")) or 0, v=_f(b.get("v")) or 0))
+            bars.append(
+                Bar(t=t, o=_f(b.get("o")) or 0, h=_f(b.get("h")) or 0, l=_f(b.get("l")) or 0,
+                    c=_f(b.get("c")) or 0, v=_f(b.get("v")) or 0)
+            )
         bars.sort(key=lambda x: x.t)
         return bars
 
+    async def get_bars(self, symbol: str, limit: int) -> list[Bar]:
+        now = datetime.now(timezone.utc)
+        params: dict[str, Any] = {
+            "timeframe": "1Min",
+            "start": _rfc3339(now - timedelta(days=5)),
+            "limit": max(1, min(limit, 1000)),
+            "sort": "desc",
+        }
+        if is_crypto(symbol):
+            params["symbols"] = _check_crypto(symbol)
+            data = await self._request("GET", "data", f"/v1beta3/crypto/{CRYPTO_LOCATION}/bars", params=params)
+            return self._parse_bars(((data or {}).get("bars") or {}).get(symbol) or [])
+        params.update(feed=DATA_FEED, adjustment="raw")
+        data = await self._request("GET", "data", f"/v2/stocks/{_check_symbol(symbol)}/bars", params=params)
+        return self._parse_bars((data or {}).get("bars") or [])
+
     async def get_latest_price(self, symbol: str) -> LatestPrice | None:
-        data = await self._request(
-            "GET", "data", f"/v2/stocks/{_check_symbol(symbol)}/trades/latest", params={"feed": DATA_FEED}
-        )
-        trade = (data or {}).get("trade") or {}
+        if is_crypto(symbol):
+            data = await self._request(
+                "GET", "data", f"/v1beta3/crypto/{CRYPTO_LOCATION}/latest/trades",
+                params={"symbols": _check_crypto(symbol)},
+            )
+            trade = ((data or {}).get("trades") or {}).get(symbol) or {}
+            source = "Krypto letzter Trade"
+        else:
+            data = await self._request(
+                "GET", "data", f"/v2/stocks/{_check_symbol(symbol)}/trades/latest", params={"feed": DATA_FEED}
+            )
+            trade = (data or {}).get("trade") or {}
+            source = "IEX letzter Trade"
         price = _f(trade.get("p"))
         at = _dt(trade.get("t"))
         if not price or at is None:
             return None
-        return LatestPrice(price=price, at=at, source="IEX letzter Trade")
+        return LatestPrice(price=price, at=at, source=source)
+
+    async def get_quote(self, symbol: str) -> Quote | None:
+        if is_crypto(symbol):
+            data = await self._request(
+                "GET", "data", f"/v1beta3/crypto/{CRYPTO_LOCATION}/latest/quotes",
+                params={"symbols": _check_crypto(symbol)},
+            )
+            q = ((data or {}).get("quotes") or {}).get(symbol) or {}
+            source = "Alpaca Krypto (bester Geld-/Briefkurs)"
+        else:
+            data = await self._request(
+                "GET", "data", f"/v2/stocks/{_check_symbol(symbol)}/quotes/latest", params={"feed": DATA_FEED}
+            )
+            q = (data or {}).get("quote") or {}
+            source = "IEX-Quote (nur Handelsplatz IEX)"
+        bid, ask, at = _f(q.get("bp")), _f(q.get("ap")), _dt(q.get("t"))
+        if not bid or not ask or at is None or ask < bid:
+            return None
+        return Quote(symbol=symbol, bid=bid, ask=ask, at=at, source=source)

@@ -25,6 +25,7 @@ export function OrderForm({ status, onDone }: { status: Status; onDone: () => vo
   const [msg, setMsg] = useState<{ tone: string; text: string } | null>(null);
 
   const paperLocked = mode === "PAPER" && !status.orders_enabled;
+  const crypto = symbol.includes("/");
 
   function changed() {
     setPreview(null);
@@ -37,7 +38,7 @@ export function OrderForm({ status, onDone }: { status: Status; onDone: () => vo
       expected_mode: mode,
       symbol: symbol.trim().toUpperCase(),
       side,
-      time_in_force: tif,
+      time_in_force: crypto ? "gtc" : tif,
       qty: kind === "qty" ? amount.replace(",", ".") : null,
       notional: kind === "notional" ? amount.replace(",", ".") : null,
     };
@@ -108,8 +109,8 @@ export function OrderForm({ status, onDone }: { status: Status; onDone: () => vo
       <form onSubmit={doPreview} className="stack">
         <div className="form-grid">
           <label className="field">
-            Symbol (US-Aktie/ETF)
-            <input value={symbol} maxLength={8} onChange={(e) => { setSymbol(e.target.value.toUpperCase()); changed(); }} required />
+            Symbol (US-Aktie/ETF oder Krypto wie BTC/USD)
+            <input value={symbol} maxLength={14} onChange={(e) => { setSymbol(e.target.value.toUpperCase()); changed(); }} required />
           </label>
           <div className="field">
             <span className="small muted">Seite</span>
@@ -133,15 +134,20 @@ export function OrderForm({ status, onDone }: { status: Status; onDone: () => vo
           </label>
           <label className="field">
             Gültigkeit
-            <select value={tif} onChange={(e) => { setTif(e.target.value as "day" | "gtc"); changed(); }}>
-              <option value="day">day – bis Handelsschluss</option>
-              <option value="gtc" disabled={kind === "notional"}>gtc – bis Widerruf (nur ganze Stück)</option>
-            </select>
+            {crypto ? (
+              <select value="gtc" disabled><option value="gtc">gtc – Krypto (rund um die Uhr)</option></select>
+            ) : (
+              <select value={tif} onChange={(e) => { setTif(e.target.value as "day" | "gtc"); changed(); }}>
+                <option value="day">day – bis Handelsschluss</option>
+                <option value="gtc" disabled={kind === "notional"}>gtc – bis Widerruf (nur ganze Stück)</option>
+              </select>
+            )}
           </label>
         </div>
         <div className="small muted">
-          Nur Market-Orders, nur Long. Betrags- und Bruchstück-Orders sind nur mit „day“ möglich. Verkäufe reduzieren
-          ausschliesslich vorhandenen, nicht gebundenen Bestand.
+          Nur Market-Orders, nur Long. Aktien: Betrags- und Bruchstück-Orders nur mit „day“. Krypto: immer „gtc“,
+          Kauf zum Brief-, Verkauf zum Geldkurs, Gebühr je Ausführung. Verkäufe reduzieren ausschliesslich vorhandenen,
+          nicht gebundenen Bestand.
         </div>
         <div className="row">
           <button className="btn" type="submit" disabled={busy}>Prüfen &amp; Zusammenfassung</button>

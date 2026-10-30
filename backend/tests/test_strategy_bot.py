@@ -65,7 +65,7 @@ def setup_signal(fake, closes: list[float]) -> None:
 
 
 async def start_paper_bot(ctx: AppContext, fake) -> None:
-    set_bot_params(ctx.db, "PAPER", BotParams(symbol="SPY", short_window=2, long_window=4, order_value=5))
+    set_bot_params(ctx.db, "PAPER", BotParams(strategy="sma", symbol="SPY", short_window=2, long_window=4, order_value=5))
     setup_signal(fake, [10.0] * 10)
     await ctx.bot.start("PAPER")
 
@@ -78,7 +78,7 @@ async def test_double_start_rejected(paper_ctx: AppContext, fake):
 
 
 async def test_parallel_starts_only_one_instance(paper_ctx: AppContext, fake):
-    set_bot_params(paper_ctx.db, "PAPER", BotParams(symbol="SPY", short_window=2, long_window=4, order_value=5))
+    set_bot_params(paper_ctx.db, "PAPER", BotParams(strategy="sma", symbol="SPY", short_window=2, long_window=4, order_value=5))
     setup_signal(fake, [10.0] * 10)
     results = await asyncio.gather(*[paper_ctx.bot.start("PAPER") for _ in range(5)], return_exceptions=True)
     assert sum(not isinstance(r, Exception) for r in results) == 1
@@ -96,7 +96,7 @@ async def test_parallel_starts_only_one_instance(paper_ctx: AppContext, fake):
     ],
 )
 async def test_start_preconditions(paper_ctx: AppContext, fake, prep, msg):
-    set_bot_params(paper_ctx.db, "PAPER", BotParams(symbol="SPY", short_window=2, long_window=4, order_value=5))
+    set_bot_params(paper_ctx.db, "PAPER", BotParams(strategy="sma", symbol="SPY", short_window=2, long_window=4, order_value=5))
     setup_signal(fake, [10.0] * 10)
     prep(paper_ctx, fake)
     with pytest.raises(BotStartError, match=msg):
@@ -182,7 +182,7 @@ async def test_pause_keeps_positions_and_orders(paper_ctx: AppContext, fake):
 
 
 async def test_mode_switch_pauses_bot(ctx: AppContext):
-    set_bot_params(ctx.db, "DEMO", BotParams(symbol="SPY", short_window=2, long_window=4))
+    set_bot_params(ctx.db, "DEMO", BotParams(strategy="sma", symbol="SPY", short_window=2, long_window=4))
     await ctx.bot.start("DEMO")
     assert ctx.bot.running
     await ctx.set_mode("PAPER")
@@ -190,7 +190,7 @@ async def test_mode_switch_pauses_bot(ctx: AppContext):
 
 
 async def test_demo_bot_runs_without_alpaca(ctx: AppContext, fake, clock):
-    set_bot_params(ctx.db, "DEMO", BotParams(symbol="SPY", short_window=2, long_window=4, order_value=20))
+    set_bot_params(ctx.db, "DEMO", BotParams(strategy="sma", symbol="SPY", short_window=2, long_window=4, order_value=20))
     await ctx.bot.start("DEMO")
     for _ in range(60):
         clock.advance(minutes=1)
@@ -225,7 +225,7 @@ async def test_overnight_gap_does_not_trigger_signal(paper_ctx: AppContext, fake
     """Kurz nach Eröffnung: Vortageskerzen bleiben draussen, eine Kurslücke löst kein Signal aus."""
     from datetime import datetime as dt
 
-    set_bot_params(paper_ctx.db, "PAPER", BotParams(symbol="SPY", short_window=2, long_window=4, order_value=5))
+    set_bot_params(paper_ctx.db, "PAPER", BotParams(strategy="sma", symbol="SPY", short_window=2, long_window=4, order_value=5))
     # 13:33 UTC = 09:33 New York → erst 3 Kerzen der laufenden Sitzung
     clock.t = dt(2026, 10, 30, 13, 33, 5, tzinfo=timezone.utc)
     # Vor Eröffnung leichter Abwärtstrend, heute Kurslücke nach oben: ohne Filter wäre das ein Kaufsignal
@@ -249,7 +249,7 @@ async def test_overnight_gap_does_not_trigger_signal(paper_ctx: AppContext, fake
 
 
 async def test_bot_start_refused_on_holiday(paper_ctx: AppContext, fake):
-    set_bot_params(paper_ctx.db, "PAPER", BotParams(symbol="SPY", short_window=2, long_window=4, order_value=5))
+    set_bot_params(paper_ctx.db, "PAPER", BotParams(strategy="sma", symbol="SPY", short_window=2, long_window=4, order_value=5))
     setup_signal(fake, [10.0] * 10)
     fake.holidays.add("2026-10-30")
     with pytest.raises(BotStartError, match="keine reguläre Sitzung"):

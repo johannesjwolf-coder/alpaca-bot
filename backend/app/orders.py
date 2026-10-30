@@ -25,6 +25,7 @@ from .broker.base import (
     LOCAL_UNKNOWN,
     SYMBOL_RE,
     BrokerError,
+    is_crypto,
     OrderRequest,
     is_open_status,
 )
@@ -37,14 +38,15 @@ from .timeutil import trading_day
 if TYPE_CHECKING:  # pragma: no cover
     from .core import AppContext
 
-ALLOWED_EXCHANGES_EXCLUDED = {"OTC", "CRYPTO"}
+ALLOWED_ASSET_CLASSES = {"us_equity", "crypto"}
+EXCLUDED_EQUITY_EXCHANGES = {"OTC", "CRYPTO"}
 MAX_QTY_DECIMALS = 9
 MAX_NOTIONAL_DECIMALS = 2
 MIN_NOTIONAL = Decimal("1")
 
 
 class OrderInput(BaseModel):
-    symbol: str = Field(min_length=1, max_length=10)
+    symbol: str = Field(min_length=1, max_length=16)
     side: Literal["buy", "sell"]
     qty: Decimal | None = None
     notional: Decimal | None = None
@@ -162,13 +164,17 @@ class OrderService:
             return done()
         preview["asset_name"] = asset.name
         asset_problems = []
-        if asset.asset_class != "us_equity":
-            asset_problems.append(f"Klasse {asset.asset_class} (nur US-Aktien/ETFs)")
+        crypto = asset.asset_class == "crypto"
+        preview["asset_class"] = asset.asset_class
+        if asset.asset_class not in ALLOWED_ASSET_CLASSES:
+            asset_problems.append(f"Klasse {asset.asset_class} (nur US-Aktien/ETFs und Krypto gegen USD)")
+        if crypto != is_crypto(symbol):
+            asset_problems.append("Symbol passt nicht zur Instrumentklasse")
         if asset.status != "active":
             asset_problems.append(f"Status {asset.status}")
         if not asset.tradable:
             asset_problems.append("laut Broker nicht handelbar")
-        if asset.exchange.upper() in ALLOWED_EXCHANGES_EXCLUDED:
+        if not crypto and asset.exchange.upper() in EXCLUDED_EQUITY_EXCHANGES:
             asset_problems.append(f"Handelsplatz {asset.exchange} nicht unterstützt")
         checks.append(
             Check(
@@ -193,7 +199,12 @@ class OrderService:
                 problems.append(f"höchstens {MAX_QTY_DECIMALS} Nachkommastellen")
             if fractional and not asset.fractionable:
                 problems.append("Bruchstücke sind für dieses Instrument nicht erlaubt")
-            if fractional and inp.time_in_force != "day":
+            if crypto:
+                if inp.time_in_force != "gtc":
+                    problems.append("Krypto-Orders nur mit Gültigkeit 'gtc'")
+                if asset.min_order_size and qty < Decimal(str(asset.min_order_size)):
+                    problems.append(f"Mindestmenge {asset.min_order_size:g}")
+            elif fractional and inp.time_in_force != "day":
                 problems.append("Bruchstück-Orders nur mit Gültigkeit 'day'")
             checks.append(Check("Menge/Gültigkeit", not problems, "; ".join(problems) or f"{qty} Stück, {inp.time_in_force}"))
         else:
@@ -207,22 +218,40 @@ class OrderService:
                 problems.append(f"höchstens {MAX_NOTIONAL_DECIMALS} Nachkommastellen")
             if not asset.fractionable:
                 problems.append("Betragsorders nur für Instrumente mit Bruchstückhandel")
-            if inp.time_in_force != "day":
-                problems.append("Betragsorders nur mit Gültigkeit 'day'")
-            checks.append(Check("Betrag/Gültigkeit", not problems, "; ".join(problems) or f"{notional} {acct.currency}, day"))
+            required_tif = "gtc" if crypto else "day"
+            if inp.time_in_force != required_tif:
+                problems.append(f"Betragsorders {'für Krypto ' if crypto else ''}nur mit Gültigkeit '{required_tif}'")
+            checks.append(
+                Check("Betrag/Gültigkeit", not problems, "; ".join(problems) or f"{notional} {acct.currency}, {inp.time_in_force}")
+            )
 
         # 5. Kurs für Schätzung und Risikoprüfung
         price = None
-        try:
-            lp = await rt.broker.get_latest_price(symbol)
-        except BrokerError as exc:
-            lp = None
-            warnings.append(f"Aktueller Kurs nicht abrufbar: {exc.message}")
+        spread_pct = None
+        lp = None
+        if crypto:
+            # Krypto: bester Geld-/Briefkurs – Käufe zahlen den Brief-, Verkäufe erhalten den Geldkurs.
+            try:
+                q = await rt.broker.get_quote(symbol)
+            except BrokerError as exc:
+                q = None
+                warnings.append(f"Aktueller Kurs nicht abrufbar: {exc.message}")
+            if q is not None:
+                price = q.ask if inp.side == "buy" else q.bid
+                spread_pct = q.spread_pct
+                preview["est_price_source"] = f"{q.source}, {'Brief' if inp.side == 'buy' else 'Geld'}kurs"
+                preview["est_price_at"] = iso(q.at)
+                preview["spread_pct"] = round(spread_pct, 4)
+        else:
+            try:
+                lp = await rt.broker.get_latest_price(symbol)
+            except BrokerError as exc:
+                warnings.append(f"Aktueller Kurs nicht abrufbar: {exc.message}")
         if lp is not None:
             price = lp.price
             preview["est_price_source"] = lp.source
             preview["est_price_at"] = iso(lp.at)
-        else:
+        elif price is None:
             pos = next((p for p in snap.positions if p.symbol == symbol), None)
             if pos and pos.current_price:
                 price = pos.current_price
@@ -231,7 +260,9 @@ class OrderService:
         est_value = float(notional) if notional is not None else (float(qty) * price if price else None)
         preview["est_value"] = round(est_value, 2) if est_value is not None else None
 
-        if not snap.clock.is_open:
+        if crypto:
+            warnings.append("Krypto wird rund um die Uhr gehandelt; Alpaca berechnet je Ausführung eine Gebühr.")
+        elif not snap.clock.is_open:
             warnings.append(
                 "Markt ist geschlossen – eine Market-Order mit Gültigkeit 'day' wird bis zur nächsten Eröffnung vorgemerkt."
             )
@@ -247,6 +278,7 @@ class OrderService:
                 symbol=symbol,
                 est_value=est_value,
                 qty=float(qty) if qty is not None else None,
+                spread_pct=spread_pct,
             )
         )
         return done()
@@ -393,5 +425,5 @@ class OrderService:
                 }
             )
         q = Decimal(str(qty)).quantize(Decimal("0.000000001"), rounding=ROUND_DOWN).normalize()
-        inp = OrderInput(symbol=symbol, side="sell", qty=q, time_in_force="day")
+        inp = OrderInput(symbol=symbol, side="sell", qty=q, time_in_force="gtc" if is_crypto(symbol) else "day")
         return await self.submit(mode, inp, source="manual", idempotency_key=idempotency_key)

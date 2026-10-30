@@ -14,7 +14,22 @@ from decimal import Decimal
 
 from pydantic import BaseModel
 
-SYMBOL_RE = re.compile(r"^[A-Z]{1,5}(\.[A-Z]{1,2})?$")
+STOCK_SYMBOL_RE = re.compile(r"^[A-Z]{1,5}(\.[A-Z]{1,2})?\Z")
+# Krypto ausschliesslich gegen USD (das Paper-Konto rechnet in USD), z. B. BTC/USD.
+CRYPTO_SYMBOL_RE = re.compile(r"^[A-Z0-9]{2,10}/USD\Z")
+SYMBOL_RE = re.compile(r"^(?:[A-Z]{1,5}(?:\.[A-Z]{1,2})?|[A-Z0-9]{2,10}/USD)\Z")
+
+
+def is_crypto(symbol: str) -> bool:
+    return bool(CRYPTO_SYMBOL_RE.match(symbol))
+
+
+def canonical_symbol(symbol: str, asset_class: str | None = None) -> str:
+    """Einheitliche Schreibweise: Krypto immer mit Schrägstrich (Alpaca liefert teils BTCUSD)."""
+    s = symbol.strip().upper()
+    if "/" not in s and asset_class == "crypto" and s.endswith("USD") and len(s) > 3:
+        return f"{s[:-3]}/USD"
+    return s
 UUID_RE = re.compile(r"^[0-9a-fA-F-]{8,64}$")
 
 # Alpaca-Orderstatus, die sich nicht mehr ändern.
@@ -103,6 +118,8 @@ class Asset(BaseModel):
     fractionable: bool = False
     shortable: bool = False
     marginable: bool = False
+    min_order_size: float | None = None  # Krypto: kleinste Ordermenge
+    min_trade_increment: float | None = None  # Krypto: Mengenschritt
 
 
 class Position(BaseModel):
@@ -163,6 +180,24 @@ class LatestPrice(BaseModel):
     source: str
 
 
+class Quote(BaseModel):
+    """Bester Geld-/Briefkurs. Käufe zahlen ``ask``, Verkäufe erhalten ``bid``."""
+
+    symbol: str
+    bid: float
+    ask: float
+    at: datetime
+    source: str
+
+    @property
+    def mid(self) -> float:
+        return (self.bid + self.ask) / 2
+
+    @property
+    def spread_pct(self) -> float:
+        return (self.ask - self.bid) / self.mid * 100 if self.mid > 0 else float("inf")
+
+
 class Broker(ABC):
     """Gemeinsame Schnittstelle für DEMO- und PAPER-Broker."""
 
@@ -206,6 +241,9 @@ class Broker(ABC):
 
     @abstractmethod
     async def get_latest_price(self, symbol: str) -> LatestPrice | None: ...
+
+    @abstractmethod
+    async def get_quote(self, symbol: str) -> Quote | None: ...
 
     async def get_session_open(self, now: datetime) -> datetime | None:
         """Beginn der regulären Handelssitzung am Handelstag von ``now`` (UTC) oder None."""

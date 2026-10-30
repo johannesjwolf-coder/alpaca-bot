@@ -119,8 +119,8 @@ export function PriceChart({ mode, defaultSymbol }: { mode: Mode; defaultSymbol:
             aria-label="Symbol"
             value={input}
             onChange={(e) => setInput(e.target.value.toUpperCase())}
-            style={{ width: 110 }}
-            maxLength={8}
+            style={{ width: 120 }}
+            maxLength={14}
           />
           <button className="btn" type="submit">
             Anzeigen

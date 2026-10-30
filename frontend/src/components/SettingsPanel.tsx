@@ -11,11 +11,16 @@ interface SettingsResponse {
 }
 
 const LIMIT_FIELDS: [keyof RiskLimits, string, string][] = [
-  ["max_order_value", "Max. Orderwert", "0.01"],
+  ["max_order_value", "Max. Orderwert (= Grösse je Trade)", "0.01"],
   ["max_total_invested", "Max. investierter Gesamtbetrag", "0.01"],
   ["max_open_positions", "Max. offene Positionen", "1"],
-  ["max_orders_per_day", "Max. Orders pro Tag", "1"],
+  ["max_buys_per_hour", "Max. Einstiege pro Stunde", "1"],
+  ["max_buys_per_day", "Max. Einstiege pro Tag", "1"],
+  ["max_orders_per_day", "Max. Orders pro Tag (Käufe + Verkäufe)", "1"],
   ["max_daily_loss", "Max. Tagesverlust (inkl. unrealisiert)", "0.01"],
+  ["loss_streak_limit", "Pause nach Verlust-Trades in Folge", "1"],
+  ["loss_pause_min", "Dauer der Kaufpause (Min.)", "1"],
+  ["max_spread_pct", "Max. Spread für Einstiege (%)", "0.01"],
   ["price_buffer_pct", "Kurspuffer Market-Order (%)", "0.1"],
 ];
 

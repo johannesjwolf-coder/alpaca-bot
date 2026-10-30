@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from .broker.base import SYMBOL_RE
+from .broker.base import SYMBOL_RE, is_crypto
 from .db import Database
 
 
@@ -14,19 +14,47 @@ class RiskLimits(BaseModel):
     max_order_value: float = Field(50.0, gt=0, le=100_000, description="Max. Wert je Order")
     max_total_invested: float = Field(200.0, gt=0, le=1_000_000, description="Max. investierter Gesamtbetrag")
     max_open_positions: int = Field(3, ge=1, le=50)
-    max_orders_per_day: int = Field(10, ge=1, le=500)
+    max_orders_per_day: int = Field(100, ge=1, le=1000, description="Alle Orders (Käufe und Verkäufe)")
+    max_buys_per_hour: int = Field(10, ge=1, le=500, description="Einstiege pro Stunde")
+    max_buys_per_day: int = Field(50, ge=1, le=1000, description="Einstiege pro Handelstag")
     max_daily_loss: float = Field(25.0, gt=0, le=100_000, description="Max. Tagesverlust inkl. unrealisiert")
+    loss_streak_limit: int = Field(3, ge=1, le=50, description="Verlust-Trades in Folge bis zur Pause")
+    loss_pause_min: int = Field(30, ge=1, le=1440, description="Kaufpause nach Verlustserie (Minuten)")
+    max_spread_pct: float = Field(0.1, gt=0, le=5, description="Kein Einstieg bei grösserem Spread (Krypto)")
     price_buffer_pct: float = Field(2.0, ge=0, le=20, description="Sicherheitsaufschlag für Market-Orders in %")
 
 
-class BotParams(BaseModel):
-    """Demo-Parameter der Beispielstrategie (SMA-Kreuzung). Keine validierte Strategie."""
+STRATEGIES = ("scalp", "sma")
 
-    symbol: str = "SPY"
-    short_window: int = Field(10, ge=2, le=200)
-    long_window: int = Field(30, ge=3, le=400)
-    order_value: float = Field(20.0, gt=0, le=100_000, description="Zielwert je Bot-Kauf")
-    max_bar_age_s: int = Field(180, ge=60, le=3600, description="Max. Alter der letzten Kerze")
+
+class BotParams(BaseModel):
+    """Parameter der Teststrategien. Keine validierte oder profitable Strategie.
+
+    * ``scalp`` (Krypto): Kurse alle paar Sekunden, Mikrokerzen von ``bar_seconds``,
+      Einstieg bei Aufwärtskreuzung kurzer/langer Durchschnitt, Ausstieg per
+      Stop-Loss, Take-Profit oder maximaler Haltedauer.
+    * ``sma`` (US-Aktien/ETFs): Kreuzung auf abgeschlossenen Minutenkerzen der laufenden Sitzung.
+    """
+
+    strategy: str = "scalp"
+    symbol: str = "BTC/USD"
+    short_window: int = Field(6, ge=2, le=200)
+    long_window: int = Field(18, ge=3, le=400)
+    order_value: float = Field(50.0, gt=0, le=100_000, description="Zielwert je Bot-Kauf")
+    max_bar_age_s: int = Field(180, ge=60, le=3600, description="Max. Alter der letzten Minutenkerze (sma)")
+    bar_seconds: int = Field(10, ge=5, le=300, description="Länge einer Mikrokerze (scalp)")
+    poll_interval_s: float = Field(2.0, ge=1.0, le=30.0, description="Kursabruf-Intervall (scalp)")
+    stop_loss_pct: float = Field(0.3, gt=0, le=20)
+    take_profit_pct: float = Field(0.6, gt=0, le=50)
+    max_hold_min: float = Field(10.0, gt=0, le=1440)
+    fee_pct: float = Field(0.25, ge=0, le=2, description="Geschätzte Gebühr je Ausführung in %")
+
+    @field_validator("strategy")
+    @classmethod
+    def _strategy(cls, v: str) -> str:
+        if v not in STRATEGIES:
+            raise ValueError("Strategie muss 'scalp' oder 'sma' sein")
+        return v
 
     @field_validator("symbol")
     @classmethod
@@ -40,7 +68,15 @@ class BotParams(BaseModel):
     def _windows(self) -> "BotParams":
         if self.short_window >= self.long_window:
             raise ValueError("Kurzer Durchschnitt muss kleiner als der lange sein")
+        if self.strategy == "scalp" and not is_crypto(self.symbol):
+            raise ValueError("Scalping ist in dieser Version nur für Krypto (z. B. BTC/USD) vorgesehen")
+        if self.strategy == "sma" and is_crypto(self.symbol):
+            raise ValueError("Die SMA-Minutenstrategie ist für US-Aktien/ETFs vorgesehen")
         return self
+
+    @property
+    def roundtrip_cost_pct(self) -> float:
+        return 2 * self.fee_pct
 
 
 def get_risk_limits(db: Database, mode: str) -> RiskLimits:
