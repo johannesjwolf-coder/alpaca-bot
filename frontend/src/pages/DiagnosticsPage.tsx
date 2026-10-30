@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { api, errorText } from "../api";
+import { StreamLine } from "../components/StreamBadge";
 import { Card, EmptyState, Icon, Notice, Spinner, Tag } from "../components/ui";
 import { dateTime, localTz, money, shortDT } from "../format";
 import { usePoll } from "../hooks";
-import type { ConnectionTest, EventRow, Mode } from "../types";
+import type { ConnectionTest, EventRow, Mode, StreamsInfo } from "../types";
 
 interface Diag {
   app_version: string;
@@ -13,7 +14,8 @@ interface Diag {
   started_at: string;
   auth: Record<string, string | boolean | null>;
   env_files: string[];
-  endpoints: { trading: string; market_data: string; feed: string };
+  endpoints: { trading: string; market_data: string; feed: string; crypto_stream: string; order_stream: string };
+  streams: StreamsInfo;
   binding: { host: string; port: number; loopback_only: boolean };
   db_path: string;
   runtimes: Record<string, { connection: string; last_ok_at: string | null; last_error: { kind: string; message: string; hint?: string } | null }>;
@@ -86,6 +88,9 @@ export function DiagnosticsPage({ mode }: { mode: Mode }) {
               <dt>Gelesene .env</dt><dd>{d.env_files.map((f) => <code key={f}>{f}</code>)}</dd>
               <dt>Handel</dt><dd>{d.endpoints.trading} (fest)</dd>
               <dt>Marktdaten</dt><dd>{d.endpoints.market_data} · Aktien-Feed {d.endpoints.feed}</dd>
+              <dt>Datenströme</dt><dd>{d.endpoints.crypto_stream}<br />{d.endpoints.order_stream} (fest)<div className="muted small">{d.streams.note}</div></dd>
+              <StreamLine label="Kursstrom" s={d.streams.market} />
+              <StreamLine label="Order-Strom" s={d.streams.orders} />
               <dt>Bindung</dt><dd>{d.binding.host}:{d.binding.port} {d.binding.loopback_only ? <Tag tone="ok">nur localhost</Tag> : <Tag tone="bad">nicht nur localhost</Tag>}</dd>
               <dt>Datenbank</dt><dd><code>{d.db_path}</code></dd>
               {Object.entries(d.runtimes).map(([m, rt]) => {

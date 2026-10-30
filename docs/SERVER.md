@@ -7,9 +7,10 @@ Diese Anleitung bringt den Bot auf einen eigenen Linux-Server, damit er rund um 
 * Der Bot läuft im Docker-Container auf dem Server und startet nach einem Absturz oder Server-Neustart von selbst.
 * Die Oberfläche erreichen Sie **nur über Tailscale**, ein privates, verschlüsseltes Netz Ihrer eigenen Geräte. Adresse: `https://alpaca-bot.<ihr-tailnet>.ts.net`. Aus dem Internet ist sie nicht erreichbar.
 * Push-Nachrichten aufs Handy kommen über die App **ntfy**: Trades, Warnungen, Bot gestartet/pausiert, Tageszusammenfassung.
+* Kurse und Order-Ausführungen kommen per **Echtzeit-Datenstrom** von Alpaca; fällt er aus, fragt der Bot automatisch alle 2 Sekunden ab.
 * Vom Internet aus ist nur SSH (Port 22) offen. Updates und Backups laufen mit je einem Befehl, Backups zusätzlich täglich automatisch.
 
-Weiterhin gilt: **nur Paper Trading**. Der Server spricht ausschliesslich mit `paper-api.alpaca.markets` und `data.alpaca.markets`, dazu für die Push-Nachrichten mit `ntfy.sh`.
+Weiterhin gilt: **nur Paper Trading**. Der Server spricht ausschliesslich mit `paper-api.alpaca.markets`, `data.alpaca.markets` und `stream.data.alpaca.markets` (Echtzeit-Kurse), dazu für die Push-Nachrichten mit `ntfy.sh`.
 
 ---
 
@@ -206,6 +207,8 @@ ufw delete allow OpenSSH
 | Seite lädt nicht | Tailscale auf dem Gerät eingeschaltet? Auf dem Server `tailscale status` und `tailscale serve status` prüfen. |
 | „Invalid host header“ oder Aktionen schlagen mit 403 fehl | Tailscale-Name hat sich geändert. `bash /opt/alpaca-bot/deploy/install.sh` erneut ausführen; es trägt den aktuellen Namen ein. Die Schlüssel bleiben erhalten. |
 | PAPER: „nicht autorisiert“ (401/403) | Schlüssel falsch oder erneuert → `set-keys.sh`. Nur **Paper**-Schlüssel verwenden. |
+| *Diagnose*: Kursstrom „Verbindungslimit erreicht“ | Der kostenlose Alpaca-Zugang erlaubt einen Datenstrom je Konto. Läuft der Bot zusätzlich auf dem PC? Dort pausieren oder in dessen `.env` `APP_STREAMS=off` setzen. Bis dahin fragt der Server die Kurse ab. |
+| *Diagnose*: Strom „Anmeldung abgelehnt“ | Schlüssel prüfen (`set-keys.sh`); der Bot fragt so lange ab. |
 | Keine Push-Nachrichten | *Einstellungen → Benachrichtigungen* zeigt den letzten Fehler. Thema in der App muss genau dem Wert in `/opt/alpaca-bot/.env` entsprechen. |
 | Build bricht mit „429 Too Many Requests“ ab | Docker Hub begrenzt anonyme Downloads. Eine Stunde warten oder mit kostenlosem Docker-Konto `docker login` ausführen und `update.sh --rebuild` starten. |
 | Container startet immer wieder neu | Protokoll ansehen (siehe oben). Häufig: ungültige Werte in `.env`. |

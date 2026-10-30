@@ -20,6 +20,7 @@ from .orders import OrderService
 from .risk import RiskEngine
 from .runtime import ModeRuntime
 from .settings_store import APP_SCOPE
+from .streams import Connector, StreamManager
 from .symbols import SymbolService
 from .timeutil import utcnow
 
@@ -40,6 +41,7 @@ class AppContext:
         paper_broker: Broker | None = None,
         demo_broker: Broker | None = None,
         now: Callable[[], datetime] = utcnow,
+        stream_connector: Connector | None = None,
     ) -> None:
         self.settings = settings
         self.db = db
@@ -54,6 +56,7 @@ class AppContext:
         self.orders = OrderService(self)
         self.bot = BotEngine(self)
         self.symbols = SymbolService(self)
+        self.streams = StreamManager(self, connector=stream_connector)
         self.notifier = Notifier(self, now=now)
         db.event_listeners.append(self.notifier.on_event)
         self._sync_task: asyncio.Task | None = None
@@ -179,6 +182,7 @@ class AppContext:
         )
         if background:
             self.notifier.start()
+            await self.streams.orders_for(self.mode)
             self._sync_task = asyncio.create_task(self._sync_loop(), name="broker-sync")
             if resume:
                 self._resume_task = asyncio.create_task(self.resume_after_restart(state), name="resume")
@@ -188,6 +192,7 @@ class AppContext:
             self._resume_task.cancel()
         # Beim Herunterfahren bleibt der gemerkte Zustand erhalten (Grundlage fürs Fortsetzen).
         await self.bot.pause("Anwendung wird beendet", remember=False)
+        await self.streams.stop()
         await self.notifier.stop()
         if self._sync_task:
             self._sync_task.cancel()
@@ -221,5 +226,6 @@ class AppContext:
             for m in APP_MODES:
                 self.db.set(m, "orders_enabled", False)
             self.mode = mode
+            await self.streams.orders_for(mode)
             self.db.add_event(mode, "info", "system", f"Modus gewechselt: {old} → {mode}. Orderfreigabe ist aus.")
             self.db.add_event(old, "info", "system", f"Modus gewechselt: {old} → {mode}.")

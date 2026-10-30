@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { api, errorText } from "../api";
 import { useBotInfo } from "../components/BotCard";
+import { FeedTag } from "../components/StreamBadge";
 import { useSymbolSuggestions } from "../components/SymbolPicker";
 import { BotTradesTable } from "../components/tables";
 import { Card, EmptyState, Icon, Notice, Pill, Seg, Spinner, Tag, useConfirm } from "../components/ui";
 import { ago, dateTime, localTz, money, num, pct, price, shortDT, signedMoney, tone } from "../format";
-import type { BotParams, ScalperState, ScalperSymbolView, Status, SymbolSuggestion } from "../types";
+import type { BotParams, ScalperState, ScalperSymbolView, Status, StreamsInfo, SymbolSuggestion } from "../types";
 
 const ACTION: Record<string, [string, string]> = {
   none: ["Keine Aktion", ""],
@@ -54,7 +55,7 @@ function SymbolLive({ symbol, view }: { symbol: string; view: ScalperSymbolView 
       </div>
       <dl className="kv">
         <dt>Status</dt><dd>{view.status ?? "—"}</dd>
-        <dt>Geld / Brief</dt><dd>{q ? <>{price(q.bid)} / {price(q.ask)} <span className="muted small">Spread {pct(q.spread_pct, 3, false)} · {ago(q.at)}</span></> : "—"}</dd>
+        <dt>Geld / Brief</dt><dd>{q ? <>{price(q.bid)} / {price(q.ask)} <span className="muted small">Spread {pct(q.spread_pct, 3, false)} · {ago(q.at)}{q.via === "stream" ? " · Strom" : q.via === "poll" ? " · Abfrage" : ""}</span></> : "—"}</dd>
         {view.last_eval && <><dt>Durchschnitte</dt><dd>kurz {price(view.last_eval.sma_short)} · lang {price(view.last_eval.sma_long)}</dd></>}
       </dl>
       {t && (
@@ -67,10 +68,10 @@ function SymbolLive({ symbol, view }: { symbol: string; view: ScalperSymbolView 
   );
 }
 
-function LiveCard({ live }: { live: ScalperState | null | undefined }) {
+function LiveCard({ live, streams }: { live: ScalperState | null | undefined; streams: StreamsInfo | undefined }) {
   const entries = Object.entries(live?.symbols ?? {});
   return (
-    <Card title="Live" hint={live?.status}>
+    <Card title="Live" hint={live?.status} actions={live ? <FeedTag streams={streams} feed={live.feed} /> : undefined}>
       {!live ? (
         <EmptyState icon="bot" title="Bot pausiert">Der Live-Status je Symbol erscheint, solange der Scalping-Bot läuft.</EmptyState>
       ) : !entries.length ? (
@@ -210,7 +211,7 @@ export function BotPage({ status, onChange }: { status: Status; onChange: () => 
             {msg && <Notice tone={msg.tone}>{msg.text}</Notice>}
           </div>
         </Card>
-        <LiveCard live={running && status.bot.strategy === "scalp" ? info.data?.state.scalper ?? status.bot.scalper : null} />
+        <LiveCard live={running && status.bot.strategy === "scalp" ? info.data?.state.scalper ?? status.bot.scalper : null} streams={status.streams} />
       </div>
 
       <Card title="Strategie und Parameter" hint={running ? "Änderungen nur bei pausiertem Bot" : "Technische Paper-Testwerte"}>

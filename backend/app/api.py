@@ -24,7 +24,13 @@ from .broker.base import (
     is_open_status,
 )
 from .broker.demo import DemoBroker
-from .config import LOADED_ENV_FILES, MARKET_DATA_BASE_URL, PAPER_TRADING_BASE_URL
+from .config import (
+    CRYPTO_STREAM_URL,
+    LOADED_ENV_FILES,
+    MARKET_DATA_BASE_URL,
+    PAPER_TRADING_BASE_URL,
+    TRADE_STREAM_URL,
+)
 from .connection_check import check_connection
 from .core import AppContext
 from .db import iso
@@ -86,6 +92,7 @@ async def status(request: Request) -> dict:
         "data_source": rt.broker.data_source_label,
         "resume_after_restart": ctx.resume_enabled(),
         "notify_configured": ctx.notifier.configured,
+        "streams": ctx.streams.describe(),
     }
 
 
@@ -614,7 +621,11 @@ async def diagnostics(request: Request) -> dict:
         "started_at": iso(ctx.started_at),
         "auth": auth,  # nur Ja/Nein-Angaben, nie Werte
         "env_files": LOADED_ENV_FILES or ["keine .env gefunden"],
-        "endpoints": {"trading": PAPER_TRADING_BASE_URL, "market_data": MARKET_DATA_BASE_URL, "feed": "iex"},
+        "endpoints": {
+            "trading": PAPER_TRADING_BASE_URL, "market_data": MARKET_DATA_BASE_URL, "feed": "iex",
+            "crypto_stream": CRYPTO_STREAM_URL, "order_stream": TRADE_STREAM_URL,
+        },
+        "streams": ctx.streams.describe(),
         "binding": {"host": s.host, "port": s.port, "loopback_only": s.binds_loopback},
         "allowed_origins": s.allowed_origins,
         "db_path": str(s.db_path),

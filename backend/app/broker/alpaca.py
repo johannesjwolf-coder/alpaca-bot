@@ -86,6 +86,10 @@ class AuthStrategy:
     def describe(self) -> dict[str, Any]:  # pragma: no cover - interface
         raise NotImplementedError
 
+    def stream_credentials(self) -> tuple[str, str] | None:
+        """Schlüssel für die Anmeldenachricht der Datenströme – nur wenn sie dem Backend vorliegen."""
+        return None
+
 
 class ProxyAuth(AuthStrategy):
     """Die Cloud-Umgebung ergänzt APCA-API-KEY-ID/APCA-API-SECRET-KEY per Network Secret."""
@@ -135,6 +139,11 @@ class EnvAuth(AuthStrategy):
             )
         # Alpaca erwartet die Schlüssel ohne Bearer-Präfix.
         return {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret}
+
+    def stream_credentials(self) -> tuple[str, str] | None:
+        key = os.environ.get("ALPACA_API_KEY", "").strip()
+        secret = os.environ.get("ALPACA_SECRET_KEY", "").strip()
+        return (key, secret) if key and secret else None
 
     def describe(self) -> dict[str, Any]:
         return {
@@ -339,6 +348,10 @@ class AlpacaPaperBroker(Broker):
             event_hooks={"request": [_request_guard]},
             **kwargs,
         )
+
+    def stream_credentials(self) -> tuple[str, str] | None:
+        """Nur für die Anmeldenachricht der Datenströme (env-Modus); nie loggen."""
+        return self.auth.stream_credentials()
 
     async def aclose(self) -> None:
         await self._client.aclose()

@@ -19,6 +19,11 @@ PAPER_TRADING_BASE_URL = "https://paper-api.alpaca.markets"
 MARKET_DATA_BASE_URL = "https://data.alpaca.markets"
 PAPER_TRADING_HOST = "paper-api.alpaca.markets"
 MARKET_DATA_HOST = "data.alpaca.markets"
+# Echtzeit-Datenströme (WebSocket), vom Nutzer ausdrücklich freigegeben („Stream ok“).
+# Ebenfalls fest: Krypto-Kurse über stream.data.alpaca.markets, Order-Updates über paper-api.
+MARKET_DATA_STREAM_HOST = "stream.data.alpaca.markets"
+CRYPTO_STREAM_URL = "wss://stream.data.alpaca.markets/v1beta3/crypto/us"
+TRADE_STREAM_URL = "wss://paper-api.alpaca.markets/stream"
 
 AUTH_MODES = ("proxy", "env")
 APP_MODES = ("DEMO", "PAPER")
@@ -81,6 +86,7 @@ class Settings:
     frontend_dist: Path = field(default_factory=lambda: REPO_DIR / "frontend" / "dist")
     sync_interval_s: float = 10.0
     bot_interval_s: float = 15.0
+    streams: bool = True  # Echtzeit-Datenströme (nur ALPACA_AUTH_MODE=env); APP_STREAMS=off schaltet ab
 
     @property
     def binds_loopback(self) -> bool:
@@ -106,6 +112,7 @@ def load_settings() -> Settings:
     if os.environ.get("APP_ALLOWED_ORIGINS"):
         s.allowed_origins = _split(os.environ["APP_ALLOWED_ORIGINS"])
     s.allow_nonlocal_bind = os.environ.get("APP_ALLOW_NONLOCAL_BIND", "") == "1"
+    s.streams = os.environ.get("APP_STREAMS", "on").strip().lower() not in ("0", "off", "false", "aus", "no")
     if os.environ.get("APP_FRONTEND_DIST"):
         s.frontend_dist = Path(os.environ["APP_FRONTEND_DIST"])
     return s

@@ -286,6 +286,7 @@ def settings(tmp_path: Path) -> Settings:
         allowed_hosts=["testserver", "localhost", "127.0.0.1"],
         frontend_dist=tmp_path / "no-dist",
         bot_interval_s=3600,
+        streams=False,  # Datenströme nur in den Stream-Tests mit Fake-Verbindung
     )
 
 

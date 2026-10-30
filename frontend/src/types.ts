@@ -22,7 +22,7 @@ export interface ConnectionInfo {
 
 export interface ScalperSymbolView {
   status?: string;
-  quote?: { bid: number; ask: number; spread_pct: number; at: string; fresh: boolean; source: string };
+  quote?: { bid: number; ask: number; spread_pct: number; at: string; fresh: boolean; source: string; via?: "stream" | "poll" };
   bars_ready?: number;
   bars_needed?: number;
   last_eval?: { bar_time: string; close: number; sma_short: number | null; sma_long: number | null; signal: string };
@@ -42,6 +42,7 @@ export interface ScalperSymbolView {
 
 export interface ScalperState {
   status?: string;
+  feed?: "stream" | "poll" | "mixed";
   symbols?: Record<string, ScalperSymbolView>;
 }
 
@@ -65,6 +66,26 @@ export interface Status {
   data_source: string;
   resume_after_restart: boolean;
   notify_configured: boolean;
+  streams: StreamsInfo;
+}
+
+export interface StreamState {
+  state: "off" | "connecting" | "live" | "reconnecting" | "unavailable";
+  url: string;
+  connected_since: string | null;
+  last_message_at: string | null;
+  last_error: string | null;
+  retry_at: string | null;
+  connects: number;
+  failures: number;
+}
+
+export interface StreamsInfo {
+  enabled: boolean;
+  available: boolean;
+  note: string;
+  market: StreamState & { symbols: string[]; subscribed: string[] };
+  orders: StreamState & { events: number; last_event: string | null };
 }
 
 export interface Account {

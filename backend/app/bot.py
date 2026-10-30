@@ -33,6 +33,9 @@ if TYPE_CHECKING:  # pragma: no cover
 log = logging.getLogger("alpaca_bot.bot")
 
 
+MIN_TICK_GAP_S = 0.5  # höchstens zwei Durchläufe pro Sekunde, auch bei sehr vielen Kurs-Updates
+
+
 class BotStartError(Exception):
     pass
 
@@ -47,6 +50,11 @@ class BotEngine:
         self.last_status: str = ""
         self.strategy: str | None = None
         self.scalper = ScalpEngine(ctx)
+        self._wake = asyncio.Event()
+
+    def wake(self) -> None:
+        """Nächsten Durchlauf sofort auslösen (neuer Kurs oder Order-Update aus dem Datenstrom)."""
+        self._wake.set()
 
     @property
     def running(self) -> bool:
@@ -98,13 +106,19 @@ class BotEngine:
             if params.strategy == "scalp":
                 await self._check_scalp_start(rt, params)
                 self.scalper.reset(params)
+                await ctx.streams.market_for(mode, params.scalp_symbols)
                 interval = params.poll_interval_s
+                feed = (
+                    f"Kurse per Echtzeit-Datenstrom (Rückfall: Abfrage alle {params.poll_interval_s:g} s)"
+                    if ctx.streams.available and mode == "PAPER"
+                    else f"Kursabruf alle {params.poll_interval_s:g} s"
+                )
                 what = (
                     f"Scalping {', '.join(params.scalp_symbols)}: Mikrokerzen {params.bar_seconds} s, SMA{params.short_window}/"
                     f"SMA{params.long_window}, Einsatz {params.order_value:g} USD, Stop-Loss −{params.stop_loss_pct:g} %, "
                     f"Take-Profit +{params.take_profit_pct:g} %, max. {params.max_hold_min:g} Min., "
-                    f"Kursabruf alle {params.poll_interval_s:g} s, Schutzorder beim Broker "
-                    f"{'aktiv' if params.broker_stop else 'aus'}. Teststrategie ohne Gewinnzusage."
+                    f"{feed}, Schutzorder beim Broker {'aktiv' if params.broker_stop else 'aus'}. "
+                    "Teststrategie ohne Gewinnzusage."
                 )
             else:
                 await self._check_sma_start(rt, params, snap)
@@ -189,6 +203,7 @@ class BotEngine:
         async with self._lock:
             task, mode = self._task, self.mode
             self._task = None
+            await self.ctx.streams.market_for(mode or self.ctx.mode, None)
             if task is not None and not task.done():
                 task.cancel()
                 try:
@@ -213,7 +228,10 @@ class BotEngine:
         return max(params.long_window * 4, 120)
 
     async def _run(self, mode: str, interval: float) -> None:
+        loop = asyncio.get_running_loop()
         while True:
+            started = loop.time()
+            self._wake.clear()
             try:
                 await self.tick(mode)
             except asyncio.CancelledError:
@@ -221,7 +239,12 @@ class BotEngine:
             except Exception as exc:  # noqa: BLE001 - Bot darf nicht still sterben
                 log.exception("Bot-Tick fehlgeschlagen")
                 self._status(mode, f"Interner Fehler: {exc}", level="error")
-            await asyncio.sleep(interval)
+            # Spätestens nach `interval` weiter; mit Datenstrom früher, sobald ein neuer Kurs da ist.
+            try:
+                await asyncio.wait_for(self._wake.wait(), timeout=interval)
+            except TimeoutError:
+                pass
+            await asyncio.sleep(max(0.0, MIN_TICK_GAP_S - (loop.time() - started)))
 
     def _status(self, mode: str, text: str, level: str = "info") -> None:
         """Statuswechsel einmalig protokollieren (kein Spam bei gleichbleibendem Zustand)."""

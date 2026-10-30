@@ -187,11 +187,22 @@ class ScalpEngine:
             self.reset(params)
         rt = self.ctx.runtimes[mode]
         now = rt._now()
-        try:
-            quotes = await rt.broker.get_quotes(symbols)
-            failed = None
-        except BrokerError as exc:
-            quotes, failed = {}, f"Kursabruf fehlgeschlagen ({exc.kind}): {exc.message}"
+        # Echtzeit-Datenstrom (nur PAPER, nur wenn verbunden); fehlende Kurse kommen per Abfrage.
+        stream = self.ctx.streams.market if mode == "PAPER" else None
+        quotes: dict[str, Quote] = {}
+        if stream is not None:
+            for s in symbols:
+                sq = stream.fresh_quote(s, now, QUOTE_MAX_AGE_S)
+                if sq is not None:
+                    quotes[s] = sq
+        missing = [s for s in symbols if s not in quotes]
+        failed = None
+        if missing:
+            try:
+                quotes.update(await rt.broker.get_quotes(missing))
+            except BrokerError as exc:
+                failed = f"Kursabruf fehlgeschlagen ({exc.kind}): {exc.message}"
+        self.state["feed"] = "stream" if not missing else ("poll" if len(missing) == len(symbols) else "mixed")
         for symbol in symbols:
             st = self.syms[symbol]
             q = quotes.get(symbol)
@@ -200,9 +211,13 @@ class ScalpEngine:
                 st.view["quote"] = {
                     "bid": q.bid, "ask": q.ask, "spread_pct": round(q.spread_pct, 4),
                     "at": iso(q.at), "fresh": fresh, "source": q.source,
+                    "via": "stream" if symbol not in missing else "poll",
                 }
             if fresh:
                 assert q is not None
+                if stream is not None and symbol not in missing:
+                    for at, mid in stream.drain(symbol):  # jedes Kurs-Update fliesst in die Mikrokerzen
+                        st.bars.add(at, mid)
                 st.bars.add(now, q.mid)
             else:
                 st.view["status"] = failed or ("Kurs veraltet – keine Einstiege" if q else "Kein Kurs")
