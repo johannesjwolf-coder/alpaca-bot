@@ -20,7 +20,7 @@ from .broker.base import (
     is_open_status,
 )
 from .broker.demo import DemoBroker
-from .config import MARKET_DATA_BASE_URL, PAPER_TRADING_BASE_URL
+from .config import LOADED_ENV_FILES, MARKET_DATA_BASE_URL, PAPER_TRADING_BASE_URL
 from .connection_check import check_connection
 from .core import AppContext
 from .db import iso
@@ -415,6 +415,7 @@ async def diagnostics(request: Request) -> dict:
         "mode": ctx.mode,
         "started_at": iso(ctx.started_at),
         "auth": auth,  # nur Ja/Nein-Angaben, nie Werte
+        "env_files": LOADED_ENV_FILES or ["keine .env gefunden"],
         "endpoints": {"trading": PAPER_TRADING_BASE_URL, "market_data": MARKET_DATA_BASE_URL, "feed": "iex"},
         "binding": {"host": s.host, "port": s.port, "loopback_only": s.binds_loopback},
         "allowed_origins": s.allowed_origins,

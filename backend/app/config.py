@@ -24,12 +24,22 @@ AUTH_MODES = ("proxy", "env")
 APP_MODES = ("DEMO", "PAPER")
 
 
+# Pfade der tatsächlich gelesenen .env-Dateien (für die Diagnose; nie Werte).
+LOADED_ENV_FILES: list[str] = []
+
+
 def load_dotenv(path: Path) -> None:
-    """Minimaler .env-Leser (nur KEY=VALUE), überschreibt keine gesetzten Variablen."""
+    """Minimaler .env-Leser (nur KEY=VALUE).
+
+    Bereits gesetzte, nicht leere Umgebungsvariablen haben Vorrang. ``utf-8-sig``
+    entfernt ein BOM, das Windows-Editoren manchmal an den Dateianfang schreiben.
+    """
     if not path.is_file():
         return
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    for raw in path.read_text(encoding="utf-8-sig").splitlines():
         line = raw.strip()
+        if line.startswith("export "):
+            line = line[len("export "):].strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
@@ -37,8 +47,10 @@ def load_dotenv(path: Path) -> None:
         value = value.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
             value = value[1:-1]
-        if key and key not in os.environ:
+        if key and not os.environ.get(key, "").strip():
             os.environ[key] = value
+    if str(path) not in LOADED_ENV_FILES:
+        LOADED_ENV_FILES.append(str(path))
 
 
 def _is_loopback(host: str) -> bool:

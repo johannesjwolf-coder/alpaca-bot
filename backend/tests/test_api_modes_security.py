@@ -162,3 +162,19 @@ def test_demo_bot_start_pause_via_api(client_and_fake):
     assert r3.json()["running"] is False
     assert "Positionen" in r3.json()["pause_meaning"]
     time.sleep(0)  # noqa
+
+
+def test_dotenv_bom_and_empty_existing_value(tmp_path, monkeypatch):
+    from app.config import load_dotenv
+
+    env = tmp_path / ".env"
+    env.write_bytes("\ufeffALPACA_AUTH_MODE=env\nALPACA_API_KEY = \"PKAUSDATEI\"\nALPACA_SECRET_KEY=\n".encode())
+    monkeypatch.delenv("ALPACA_AUTH_MODE", raising=False)
+    monkeypatch.setenv("ALPACA_API_KEY", "")  # leere Systemvariable darf .env nicht verdecken
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "aus-umgebung")  # gesetzte Variable hat Vorrang
+    load_dotenv(env)
+    import os
+
+    assert os.environ["ALPACA_AUTH_MODE"] == "env"
+    assert os.environ["ALPACA_API_KEY"] == "PKAUSDATEI"
+    assert os.environ["ALPACA_SECRET_KEY"] == "aus-umgebung"

@@ -109,7 +109,11 @@ class EnvAuth(AuthStrategy):
             raise BrokerError(
                 "config_missing",
                 "Fehlende Umgebungsvariable(n): " + ", ".join(missing),
-                hint="Paper-Schlüssel in der Umgebung des Backends setzen (z. B. lokale .env, nicht versioniert).",
+                hint=(
+                    "Paper-Schlüssel in die lokale .env im Projektordner eintragen (ALPACA_API_KEY=… und "
+                    "ALPACA_SECRET_KEY=…) und das Backend neu starten. Ein Network Secret aus Claude Code "
+                    "im Web gilt nur in der Cloud, nicht auf diesem Rechner."
+                ),
             )
         # Alpaca erwartet die Schlüssel ohne Bearer-Präfix.
         return {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret}

@@ -268,7 +268,7 @@ SMA kurz (10) und SMA lang (30) auf **vollständig abgeschlossenen** Minutenkerz
 | Meldung | Ursache | Nächster Schritt |
 | --- | --- | --- |
 | *Fehlende Konfiguration: ALPACA_AUTH_MODE ist nicht gesetzt* | Variable fehlt | Cloud: `ALPACA_AUTH_MODE=proxy` in den Environment variables. PC/Server: `ALPACA_AUTH_MODE=env` in `.env`. |
-| *Fehlende Umgebungsvariable(n): ALPACA_API_KEY …* | Modus `env` ohne Schlüssel | Schlüssel in `.env` bzw. Umgebung des Backends setzen, Backend neu starten. |
+| *Fehlende Umgebungsvariable(n): ALPACA_API_KEY …* | Modus `env` ohne Schlüssel. Häufig: Die Schlüssel stehen nur im Network Secret der Cloud, das auf dem eigenen PC nicht wirkt. Oder die Datei heisst `.env.txt`. | Schlüssel in die `.env` im Projekt-Hauptordner eintragen und das Backend neu starten. *Diagnose → Gelesene .env* zeigt, welche Datei gelesen wurde. |
 | *Netzwerkfehler: Der ausgehende Proxy hat die Verbindung abgelehnt* | Cloud: kein Network Secret bzw. Host nicht freigegeben | Network Secret wie oben anlegen, **neue** Sitzung starten. |
 | *Authentifizierung abgelehnt (HTTP 401)* | Falsche Schlüssel, Live- statt Paper-Schlüssel, im Proxy-Modus falsche Header-Namen bzw. Prefix nicht geleert | Paper-Schlüssel im Alpaca-Dashboard neu erzeugen, Secret löschen und neu anlegen (Werte sind nicht editierbar). |
 | *Unzureichende Berechtigung (HTTP 403)* | Konto/Schlüssel ohne Berechtigung. Bei Orders: Bestand oder Mittel reichen nicht | Kontostatus im Alpaca-Dashboard prüfen, Menge reduzieren. |

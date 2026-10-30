@@ -11,6 +11,7 @@ interface Diag {
   mode: Mode;
   started_at: string;
   auth: Record<string, string | boolean | null>;
+  env_files: string[];
   endpoints: { trading: string; market_data: string; feed: string };
   binding: { host: string; port: number; loopback_only: boolean };
   allowed_origins: string[];
@@ -94,6 +95,7 @@ export function Diagnostics({ mode }: { mode: Mode }) {
               {Object.entries(d.auth).map(([k, v]) => (
                 <div key={k} style={{ display: "contents" }}><dt>{AUTH_LABELS[k] ?? k}</dt><dd>{yn(v)}</dd></div>
               ))}
+              <dt>Gelesene .env</dt><dd>{d.env_files.map((f) => <code key={f}>{f}</code>)}</dd>
               <dt>Handel</dt><dd>{d.endpoints.trading} (fest)</dd>
               <dt>Marktdaten</dt><dd>{d.endpoints.market_data} · Feed {d.endpoints.feed}</dd>
               <dt>Bindung</dt>
