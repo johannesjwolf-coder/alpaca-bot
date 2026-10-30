@@ -1,0 +1,28 @@
+# Geheimnisse – niemals versionieren
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Laufzeitdaten (SQLite-Datenbank, Instanz-Sperre)
+backend/data/
+data/
+*.sqlite3
+*.sqlite3-*
+
+# Frontend
+node_modules/
+frontend/dist/
+
+# Editor/OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
