@@ -31,6 +31,7 @@ from .base import (
     Order,
     OrderRequest,
     Position,
+    TIMEFRAMES,
     Quote,
     is_crypto,
 )
@@ -76,6 +77,22 @@ def demo_quote_prices(symbol: str, ts: float) -> tuple[float, float]:
     mid = demo_price(symbol, ts)
     half = mid * DEMO_SPREAD_PCT / 200
     return round(mid - half, 2), round(mid + half, 2)
+
+
+def demo_bar_tf(symbol: str, start: datetime, seconds: int) -> Bar:
+    """Deterministische Demo-Kerze beliebiger Länge (gleichmässige Stichproben im Intervall)."""
+    if seconds == 60:
+        return demo_bar(symbol, start)
+    t0 = start.timestamp()
+    n = 12
+    samples = [demo_price(symbol, t0 + seconds * i / n) for i in range(n)] + [demo_price(symbol, t0 + seconds - 0.001)]
+    vol = (500 + zlib.crc32(f"{symbol}{int(t0)}".encode()) % 4000) * seconds / 60
+    return Bar(t=start, o=samples[0], h=max(samples), l=min(samples), c=samples[-1], v=float(vol))
+
+
+def _floor(ts: datetime, seconds: int) -> datetime:
+    epoch = int(ts.timestamp())
+    return datetime.fromtimestamp(epoch - epoch % seconds, tz=timezone.utc)
 
 
 def demo_bar(symbol: str, minute_start: datetime) -> Bar:
@@ -368,13 +385,36 @@ class DemoBroker(Broker):
             (iso(now), iso(now), order_id),
         )
 
-    async def get_bars(self, symbol: str, limit: int) -> list[Bar]:
+    async def get_bars(self, symbol: str, limit: int, timeframe: str = "1Min") -> list[Bar]:
         if symbol not in DEMO_ASSETS:
             raise BrokerError("not_found", f"DEMO kennt das Symbol {symbol!r} nicht.", status_code=404)
-        now = self._now()
-        current_minute = now.replace(second=0, microsecond=0)
-        # Nur abgeschlossene Minuten, wie bei Alpaca.
-        return [demo_bar(symbol, current_minute - timedelta(minutes=i)) for i in range(limit, 0, -1)]
+        seconds = TIMEFRAMES.get(timeframe)
+        if seconds is None:
+            raise BrokerError("unprocessable", f"Unbekanntes Intervall: {timeframe}")
+        current = _floor(self._now(), seconds)
+        # Nur abgeschlossene Kerzen, wie bei Alpaca.
+        return [demo_bar_tf(symbol, current - timedelta(seconds=seconds * i), seconds) for i in range(limit, 0, -1)]
+
+    async def get_bars_range(
+        self, symbol: str, timeframe: str, start: datetime, end: datetime, max_bars: int
+    ) -> list[Bar]:
+        if symbol not in DEMO_ASSETS:
+            raise BrokerError("not_found", f"DEMO kennt das Symbol {symbol!r} nicht.", status_code=404)
+        seconds = TIMEFRAMES.get(timeframe)
+        if seconds is None:
+            raise BrokerError("unprocessable", f"Unbekanntes Intervall: {timeframe}")
+        t = _floor(start, seconds)
+        if t < start:
+            t += timedelta(seconds=seconds)
+        last = min(end, _floor(self._now(), seconds) - timedelta(seconds=seconds))
+        out = []
+        while t <= last and len(out) < max_bars:
+            out.append(demo_bar_tf(symbol, t, seconds))
+            t += timedelta(seconds=seconds)
+        return out
+
+    async def list_assets(self, asset_class: str) -> list[Asset]:
+        return [a for a in [await self.get_asset(s) for s in DEMO_ASSETS] if a.asset_class == asset_class and a.tradable]
 
     async def get_latest_price(self, symbol: str) -> LatestPrice | None:
         if symbol not in DEMO_ASSETS:

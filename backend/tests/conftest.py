@@ -118,6 +118,31 @@ class FakeAlpaca:
             for i, c in enumerate(closes)
         ]
 
+    def _page(self, bars: list[dict], q: dict) -> tuple[list[dict], str | None]:
+        """Zeitraumfilter, Sortierung und Seiten wie bei Alpaca (page_token = Offset)."""
+        items = list(bars)
+        if "start" in q:
+            items = [b for b in items if b["t"] >= q["start"][0]]
+        if "end" in q:
+            items = [b for b in items if b["t"] <= q["end"][0]]
+        if q.get("sort") == ["desc"]:
+            items.reverse()
+        offset = int(q.get("page_token", ["0"])[0])
+        limit = int(q.get("limit", [str(len(items) or 1)])[0])
+        page = items[offset : offset + limit]
+        token = str(offset + limit) if offset + limit < len(items) else None
+        return page, token
+
+    def bars_series(self, symbol: str, start, closes: list[float], spread: float = 0.0, hl: float = 0.0) -> None:
+        """Minutenkerzen ab ``start`` (o=c der Vorkerze, h/l = c ± hl)."""
+        out = []
+        prev = closes[0]
+        for i, c in enumerate(closes):
+            t = (start + timedelta(minutes=i)).isoformat().replace("+00:00", "Z")
+            out.append({"t": t, "o": prev, "h": max(prev, c) + hl, "l": min(prev, c) - hl, "c": c, "v": 10})
+            prev = c
+        self.bars[symbol] = out
+
     def count(self, method: str, path: str) -> int:
         return sum(1 for m, p, _ in self.calls if m == method and p == path)
 
@@ -149,14 +174,13 @@ class FakeAlpaca:
                 trades = {sym: {"t": cq["t"], "p": (cq["bp"] + cq["ap"]) / 2}} if cq else {}
                 return httpx.Response(200, json={"trades": trades})
             if path.endswith("/bars"):
-                return httpx.Response(200, json={"bars": {sym: self.bars.get(sym, [])}, "next_page_token": None})
+                page, token = self._page(self.bars.get(sym, []), q)
+                return httpx.Response(200, json={"bars": {sym: page}, "next_page_token": token})
         if host == "data.alpaca.markets":
             sym = path.split("/")[3]
             if path.endswith("/bars"):
-                bars = list(self.bars.get(sym, []))
-                if q.get("sort") == ["desc"]:
-                    bars = list(reversed(bars))
-                return httpx.Response(200, json={"bars": bars, "symbol": sym, "next_page_token": None})
+                page, token = self._page(self.bars.get(sym, []), q)
+                return httpx.Response(200, json={"bars": page, "symbol": sym, "next_page_token": token})
             if path.endswith("/trades/latest"):
                 if sym not in self.prices:
                     return httpx.Response(404, json={"message": "not found"})
@@ -174,6 +198,9 @@ class FakeAlpaca:
             return httpx.Response(200, json=[{"date": day, "open": self.session_open_time, "close": "16:00"}])
         if path == "/v2/positions":
             return httpx.Response(200, json=self.positions)
+        if path == "/v2/assets":
+            cls = q.get("asset_class", [None])[0]
+            return httpx.Response(200, json=[a for a in self.assets.values() if cls is None or a.get("class") == cls])
         if path.startswith("/v2/assets/"):
             # Rohpfad wie gesendet (z. B. BTC%2FUSD bleibt kodiert)
             sym = request.url.raw_path.decode().split("?")[0][len("/v2/assets/"):]

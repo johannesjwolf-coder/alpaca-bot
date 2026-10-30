@@ -45,6 +45,7 @@ from .base import (
     Order,
     OrderRequest,
     Position,
+    TIMEFRAMES,
     Quote,
     canonical_symbol,
     is_crypto,
@@ -57,6 +58,15 @@ HOSTS = {"trading": PAPER_TRADING_HOST, "data": MARKET_DATA_HOST}
 ALLOWED_HOSTS = frozenset(HOSTS.values())
 DATA_FEED = "iex"
 CRYPTO_LOCATION = "us"
+# Rückblick je Intervall für "jüngste Kerzen" (deckt Wochenenden/Feiertage ab).
+LOOKBACK = {
+    "1Min": timedelta(days=5),
+    "5Min": timedelta(days=20),
+    "15Min": timedelta(days=45),
+    "1Hour": timedelta(days=120),
+    "1Day": timedelta(days=1000),
+}
+MAX_PAGES = 10
 # Erlaubte API-Pfade je Host. Krypto-Marktdaten liegen bei Alpaca unter /v1beta3.
 PATH_PREFIXES = {"trading": ("/v2/",), "data": ("/v2/stocks/", f"/v1beta3/crypto/{CRYPTO_LOCATION}/")}
 
@@ -587,21 +597,80 @@ class AlpacaPaperBroker(Broker):
         bars.sort(key=lambda x: x.t)
         return bars
 
-    async def get_bars(self, symbol: str, limit: int) -> list[Bar]:
+    def _bars_endpoint(self, symbol: str, params: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        if is_crypto(symbol):
+            params["symbols"] = _check_crypto(symbol)
+            return f"/v1beta3/crypto/{CRYPTO_LOCATION}/bars", params
+        params.update(feed=DATA_FEED, adjustment="raw")
+        return f"/v2/stocks/{_check_symbol(symbol)}/bars", params
+
+    @staticmethod
+    def _bars_from(symbol: str, data: Any) -> list[dict]:
+        raw = (data or {}).get("bars") or []
+        return (raw.get(symbol) or []) if isinstance(raw, dict) else raw
+
+    async def get_bars(self, symbol: str, limit: int, timeframe: str = "1Min") -> list[Bar]:
+        if timeframe not in TIMEFRAMES:
+            raise BrokerError("unprocessable", f"Unbekanntes Intervall: {timeframe}")
         now = datetime.now(timezone.utc)
         params: dict[str, Any] = {
-            "timeframe": "1Min",
-            "start": _rfc3339(now - timedelta(days=5)),
+            "timeframe": timeframe,
+            "start": _rfc3339(now - LOOKBACK[timeframe]),
             "limit": max(1, min(limit, 1000)),
             "sort": "desc",
         }
-        if is_crypto(symbol):
-            params["symbols"] = _check_crypto(symbol)
-            data = await self._request("GET", "data", f"/v1beta3/crypto/{CRYPTO_LOCATION}/bars", params=params)
-            return self._parse_bars(((data or {}).get("bars") or {}).get(symbol) or [])
-        params.update(feed=DATA_FEED, adjustment="raw")
-        data = await self._request("GET", "data", f"/v2/stocks/{_check_symbol(symbol)}/bars", params=params)
-        return self._parse_bars((data or {}).get("bars") or [])
+        path, params = self._bars_endpoint(symbol, params)
+        data = await self._request("GET", "data", path, params=params)
+        return self._parse_bars(self._bars_from(symbol, data))
+
+    async def get_bars_range(
+        self, symbol: str, timeframe: str, start: datetime, end: datetime, max_bars: int
+    ) -> list[Bar]:
+        if timeframe not in TIMEFRAMES:
+            raise BrokerError("unprocessable", f"Unbekanntes Intervall: {timeframe}")
+        out: list[Bar] = []
+        token: str | None = None
+        for _ in range(MAX_PAGES):
+            params: dict[str, Any] = {
+                "timeframe": timeframe,
+                "start": _rfc3339(start),
+                "end": _rfc3339(end),
+                "limit": min(10_000, max_bars - len(out)),
+                "sort": "asc",
+            }
+            if token:
+                params["page_token"] = token
+            path, params = self._bars_endpoint(symbol, params)
+            data = await self._request("GET", "data", path, params=params)
+            out.extend(self._parse_bars(self._bars_from(symbol, data)))
+            token = (data or {}).get("next_page_token")
+            if not token or len(out) >= max_bars:
+                break
+        return out[:max_bars]
+
+    async def list_assets(self, asset_class: str) -> list[Asset]:
+        if asset_class not in ("us_equity", "crypto"):
+            return []
+        data = await self._request("GET", "trading", "/v2/assets", params={"status": "active", "asset_class": asset_class})
+        out = []
+        for d in data or []:
+            if not d.get("tradable"):
+                continue
+            cls = str(d.get("class") or asset_class)
+            if cls == "crypto" and not str(d.get("symbol", "")).endswith("USD"):
+                continue  # nur Paare gegen USD
+            out.append(
+                Asset(
+                    symbol=canonical_symbol(str(d.get("symbol") or ""), cls),
+                    name=str(d.get("name") or ""),
+                    asset_class=cls,
+                    exchange=str(d.get("exchange") or ""),
+                    status=str(d.get("status") or ""),
+                    tradable=True,
+                    fractionable=bool(d.get("fractionable")) or cls == "crypto",
+                )
+            )
+        return out
 
     async def get_latest_price(self, symbol: str) -> LatestPrice | None:
         if is_crypto(symbol):

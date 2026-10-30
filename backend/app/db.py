@@ -108,6 +108,19 @@ CREATE TABLE IF NOT EXISTS trades (
 );
 CREATE INDEX IF NOT EXISTS ix_trades_mode ON trades (mode, id);
 
+-- Gespeicherte Backtests (zum Vergleichen von Parametern)
+CREATE TABLE IF NOT EXISTS backtests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mode TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    strategy TEXT NOT NULL,
+    request TEXT NOT NULL,
+    metrics TEXT NOT NULL,
+    result TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_backtests_mode ON backtests (mode, id);
+
 -- Simulierter Broker für DEMO (entspricht dem Server-Zustand bei Alpaca)
 CREATE TABLE IF NOT EXISTS demo_account (
     id INTEGER PRIMARY KEY CHECK (id = 1),

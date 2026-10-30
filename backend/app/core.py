@@ -17,6 +17,7 @@ from .marketdata import MarketDataService
 from .orders import OrderService
 from .risk import RiskEngine
 from .runtime import ModeRuntime
+from .symbols import SymbolService
 from .timeutil import utcnow
 
 log = logging.getLogger("alpaca_bot.core")
@@ -44,6 +45,7 @@ class AppContext:
         self.risk = RiskEngine(db, now=now)
         self.orders = OrderService(self)
         self.bot = BotEngine(self)
+        self.symbols = SymbolService(self)
         self._sync_task: asyncio.Task | None = None
         self._mode_lock = asyncio.Lock()
         self.started_at = now()

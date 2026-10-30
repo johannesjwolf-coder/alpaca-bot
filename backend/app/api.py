@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import platform
 import sys
 import uuid
@@ -11,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field, ValidationError
 
 from . import __version__
+from .backtest import BacktestRequest, run_backtest
 from .bot import BotStartError
 from .broker.alpaca import AlpacaPaperBroker
 from .broker.base import (
@@ -136,6 +139,7 @@ def _merged_orders(ctx: AppContext, mode: str) -> list[dict]:
                 "status": o.status,
                 "source": row["source"] if row else "extern",
                 "created_at": iso(o.created_at or o.submitted_at),
+                "filled_at": iso(o.filled_at),
                 "updated_at": iso(o.updated_at),
                 "cancelable": is_open_status(o.status) and o.status != "pending_cancel",
                 "message": row["message"] if row else None,
@@ -158,6 +162,7 @@ def _merged_orders(ctx: AppContext, mode: str) -> list[dict]:
             "status": r["status"],
             "source": r["source"],
             "created_at": r["created_at"],
+            "filled_at": None,
             "updated_at": r["updated_at"],
             "cancelable": bool(r["broker_order_id"])
             and r["status"] not in FINAL_ORDER_STATUSES | LOCAL_FINAL,
@@ -190,12 +195,17 @@ async def dashboard(request: Request) -> dict:
 
 
 @router.get("/bars")
-async def bars(request: Request, symbol: str = Query("SPY", max_length=10)) -> dict:
+async def bars(
+    request: Request,
+    symbol: str = Query("SPY", max_length=16),
+    timeframe: str = Query("1Min", pattern="^(1Min|5Min|15Min|1Hour|1Day)$"),
+    limit: int = Query(300, ge=20, le=1000),
+) -> dict:
     ctx = ctx_of(request)
     rt = ctx.runtime
     params = get_bot_params(ctx.db, ctx.mode)
-    res = await ctx.market.bars(rt, symbol, limit=240, max_age_s=params.max_bar_age_s)
-    if symbol.strip().upper() == params.symbol and params.strategy == "sma":
+    res = await ctx.market.bars(rt, symbol, limit=limit, max_age_s=params.max_bar_age_s, timeframe=timeframe)
+    if symbol.strip().upper() == params.symbol and params.strategy == "sma" and timeframe == "1Min":
         session_open = None
         if rt.broker.uses_sessions:
             try:
@@ -209,6 +219,12 @@ async def bars(request: Request, symbol: str = Query("SPY", max_length=10)) -> d
             "session_filter": rt.broker.uses_sessions,
         }
     return res
+
+
+@router.get("/symbols")
+async def symbols(request: Request, q: str = Query("", max_length=24)) -> dict:
+    ctx = ctx_of(request)
+    return await ctx.symbols.suggest(ctx.mode, q)
 
 
 # ---------------------------------------------------------------- Orders
@@ -442,6 +458,70 @@ async def emergency_stop(body: ModeOnly, request: Request) -> dict:
         f"Not-Aus: {len(result['canceled'])} Order(s) storniert, {len(result['closed'])} Position(en) geschlossen, "
         f"{len(result['not_closed'])} nicht geschlossen.",
     )
+    return result
+
+
+# --------------------------------------------------------------- Backtest
+class BacktestBody(BacktestRequest):
+    expected_mode: Mode
+
+
+_backtest_lock = asyncio.Lock()
+KEEP_BACKTESTS = 30
+
+
+@router.post("/backtests")
+async def backtest_run(body: BacktestBody, request: Request) -> dict:
+    """Backtest auf historischen Kerzen – sendet keine Orders, liest nur Marktdaten."""
+    ctx = ctx_of(request)
+    require_mode(ctx, body.expected_mode)
+    req = BacktestRequest(**body.model_dump(exclude={"expected_mode"}))
+    if _backtest_lock.locked():
+        raise HTTPException(409, "Es läuft bereits ein Backtest.")
+    async with _backtest_lock:
+        try:
+            result = await run_backtest(ctx, ctx.mode, req, get_risk_limits(ctx.db, ctx.mode))
+        except BrokerError as exc:
+            raise broker_http_error(exc) from exc
+    cur = ctx.db.execute(
+        "INSERT INTO backtests (mode, created_at, symbol, strategy, request, metrics, result) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (ctx.mode, result["created_at"], req.symbol, req.strategy, json.dumps(req.model_dump()),
+         json.dumps(result["metrics"]), json.dumps(result)),
+    )
+    ctx.db.execute(
+        "DELETE FROM backtests WHERE mode=? AND id NOT IN (SELECT id FROM backtests WHERE mode=? ORDER BY id DESC LIMIT ?)",
+        (ctx.mode, ctx.mode, KEEP_BACKTESTS),
+    )
+    result["id"] = cur.lastrowid
+    ctx.db.add_event(
+        ctx.mode, "info", "backtest",
+        f"Backtest {req.symbol} ({req.strategy}, {req.days} Tage): {result['metrics']['trades']} Trades, "
+        f"netto {result['metrics']['net_pnl']:+.2f} USD.",
+    )
+    return result
+
+
+@router.get("/backtests")
+async def backtest_list(request: Request) -> dict:
+    ctx = ctx_of(request)
+    rows = ctx.db.query(
+        "SELECT id, created_at, symbol, strategy, request, metrics FROM backtests WHERE mode=? ORDER BY id DESC",
+        (ctx.mode,),
+    )
+    for r in rows:
+        r["request"] = json.loads(r["request"])
+        r["metrics"] = json.loads(r["metrics"])
+    return {"mode": ctx.mode, "runs": rows}
+
+
+@router.get("/backtests/{run_id}")
+async def backtest_get(run_id: int, request: Request) -> dict:
+    ctx = ctx_of(request)
+    row = ctx.db.query_one("SELECT id, result FROM backtests WHERE mode=? AND id=?", (ctx.mode, run_id))
+    if not row:
+        raise HTTPException(404, "Backtest nicht gefunden")
+    result = json.loads(row["result"])
+    result["id"] = row["id"]
     return result
 
 

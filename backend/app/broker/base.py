@@ -20,6 +20,10 @@ CRYPTO_SYMBOL_RE = re.compile(r"^[A-Z0-9]{2,10}/USD\Z")
 SYMBOL_RE = re.compile(r"^(?:[A-Z]{1,5}(?:\.[A-Z]{1,2})?|[A-Z0-9]{2,10}/USD)\Z")
 
 
+# Unterstützte Kerzenintervalle (Alpaca-Schreibweise) und ihre Länge in Sekunden.
+TIMEFRAMES: dict[str, int] = {"1Min": 60, "5Min": 300, "15Min": 900, "1Hour": 3600, "1Day": 86400}
+
+
 def is_crypto(symbol: str) -> bool:
     return bool(CRYPTO_SYMBOL_RE.match(symbol))
 
@@ -237,7 +241,18 @@ class Broker(ABC):
     async def cancel_order(self, order_id: str) -> None: ...
 
     @abstractmethod
-    async def get_bars(self, symbol: str, limit: int) -> list[Bar]: ...
+    async def get_bars(self, symbol: str, limit: int, timeframe: str = "1Min") -> list[Bar]:
+        """Die jüngsten ``limit`` Kerzen (aufsteigend sortiert)."""
+
+    @abstractmethod
+    async def get_bars_range(
+        self, symbol: str, timeframe: str, start: datetime, end: datetime, max_bars: int
+    ) -> list[Bar]:
+        """Alle Kerzen im Zeitraum (aufsteigend, höchstens ``max_bars``) – für Backtests."""
+
+    async def list_assets(self, asset_class: str) -> list[Asset]:
+        """Handelbare Instrumente einer Klasse (für Symbolvorschläge)."""
+        return []
 
     @abstractmethod
     async def get_latest_price(self, symbol: str) -> LatestPrice | None: ...
