@@ -20,8 +20,7 @@ export interface ConnectionInfo {
   last_error_at: string | null;
 }
 
-export interface ScalperState {
-  symbol?: string;
+export interface ScalperSymbolView {
   status?: string;
   quote?: { bid: number; ask: number; spread_pct: number; at: string; fresh: boolean; source: string };
   bars_ready?: number;
@@ -35,9 +34,15 @@ export interface ScalperState {
     target_price: number;
     deadline: string;
     entry_time: string;
+    broker_stop?: boolean;
     bid?: number;
     pnl_pct?: number;
   };
+}
+
+export interface ScalperState {
+  status?: string;
+  symbols?: Record<string, ScalperSymbolView>;
 }
 
 export interface BotState {
@@ -58,6 +63,8 @@ export interface Status {
   connection: ConnectionInfo;
   market: { is_open: boolean; next_open: string | null; next_close: string | null; simulated: boolean } | null;
   data_source: string;
+  resume_after_restart: boolean;
+  notify_configured: boolean;
 }
 
 export interface Account {
@@ -137,6 +144,9 @@ export interface RiskLimits {
 export interface BotParams {
   strategy: "scalp" | "sma";
   symbol: string;
+  symbols: string[];
+  broker_stop: boolean;
+  stop_limit_offset_pct: number;
   short_window: number;
   long_window: number;
   order_value: number;
@@ -165,6 +175,7 @@ export interface Trade {
   fees_est: number | null;
   net_pnl: number | null;
   note: string | null;
+  stop_cid?: string | null;
   created_at: string;
 }
 
@@ -389,4 +400,34 @@ export interface BacktestRun {
   strategy: "scalp" | "sma";
   request: BacktestRequest;
   metrics: BacktestMetrics;
+}
+
+export interface NotifySettings {
+  enabled: boolean;
+  paper_only: boolean;
+  trades: boolean;
+  warnings: boolean;
+  bot: boolean;
+  daily_summary: boolean;
+  summary_time: string;
+}
+
+export interface NotifyInfo {
+  configured: boolean;
+  server: string | null;
+  token_set: boolean;
+  config_error: string | null;
+  timezone: string;
+  settings: NotifySettings;
+  sent_total: number;
+  dropped: number;
+  last_sent_at: string | null;
+  last_error: string | null;
+}
+
+export interface ResumeInfo {
+  enabled: boolean;
+  last_run: { mode: Mode | null; bot: boolean; updated_at: string | null };
+  status: string | null;
+  pending: boolean;
 }

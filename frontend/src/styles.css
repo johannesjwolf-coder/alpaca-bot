@@ -1116,6 +1116,75 @@ table.data td:last-child {
   border-color: #e6d3ad;
 }
 
+/* Symbolliste (Bot) */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 30px;
+  padding: 0 4px 0 12px;
+  border: 1px solid #e6d3ad;
+  border-radius: var(--r-pill);
+  background: var(--gold-bg);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.chip button {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.chip button:hover:not(:disabled) {
+  background: var(--surface);
+  color: var(--text);
+}
+.chip button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.live-list {
+  display: grid;
+  gap: var(--s4);
+}
+.live-sym + .live-sym {
+  padding-top: var(--s4);
+  border-top: 1px solid var(--line);
+}
+.live-sym > .row {
+  margin-bottom: var(--s2);
+}
+.mini-quotes {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-sm);
+}
+.mini-quotes li {
+  display: grid;
+  grid-template-columns: minmax(72px, auto) 1fr auto;
+  gap: var(--s2);
+  align-items: baseline;
+}
+.mini-quotes .num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
 /* ==========================================================================
    Chart
    ========================================================================== */

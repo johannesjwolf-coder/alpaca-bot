@@ -1,13 +1,16 @@
 import { useEffect, useState } from "react";
 import { api, errorText } from "../api";
+import { NotifyCard, ResumeCard } from "../components/AutomationSettings";
 import { Card, Notice, Seg, Spinner, Tag, useConfirm } from "../components/ui";
 import { usePoll } from "../hooks";
-import type { Mode, RiskLimits, Status } from "../types";
+import type { Mode, NotifyInfo, ResumeInfo, RiskLimits, Status } from "../types";
 
 interface SettingsResponse {
   mode: Mode;
   risk_limits: RiskLimits;
   defaults: { risk_limits: RiskLimits };
+  notify: NotifyInfo;
+  resume: ResumeInfo;
   note: string;
 }
 
@@ -90,7 +93,7 @@ export function SettingsPage({ status, onChange }: { status: Status; onChange: (
           <Card title="Paper-Orderfreigabe" actions={mode === "PAPER" ? <Tag tone={status.orders_enabled ? "warn" : ""}>{status.orders_enabled ? "Freigegeben" : "Gesperrt"}</Tag> : undefined}>
             {mode === "PAPER" ? (
               <div className="stack">
-                <p className="sm">Ohne Freigabe sind manuelle und automatische Paper-Orders gesperrt. Nach jedem Neustart ist sie wieder aus.</p>
+                <p className="sm">Ohne Freigabe sind manuelle und automatische Paper-Orders gesperrt. Nach jedem Neustart ist sie wieder aus{status.resume_after_restart ? " – ausser beim Fortsetzen einer laufenden Automatik (siehe unten)" : ""}.</p>
                 <div className="row">
                   {status.orders_enabled ? (
                     <button className="btn" disabled={busy} onClick={() => act(() => api.post("/orders-release", { expected_mode: mode, enabled: false }), "Freigabe aufgehoben.")}>
@@ -159,6 +162,10 @@ export function SettingsPage({ status, onChange }: { status: Status; onChange: (
             </form>
           )}
         </Card>
+      </div>
+      <div className="grid-2">
+        <NotifyCard info={settings.data?.notify} busy={busy} act={act} />
+        <ResumeCard info={settings.data?.resume} busy={busy} act={act} />
       </div>
     </>
   );

@@ -31,10 +31,12 @@ from .db import iso
 from .orders import OrderBlocked, OrderFailed, OrderInput
 from .settings_store import (
     BotParams,
+    NotifySettings,
     RiskLimits,
     get_bot_params,
     get_risk_limits,
     set_bot_params,
+    set_notify_settings,
     set_risk_limits,
 )
 
@@ -82,6 +84,8 @@ async def status(request: Request) -> dict:
             else None
         ),
         "data_source": rt.broker.data_source_label,
+        "resume_after_restart": ctx.resume_enabled(),
+        "notify_configured": ctx.notifier.configured,
     }
 
 
@@ -140,6 +144,8 @@ def _merged_orders(ctx: AppContext, mode: str) -> list[dict]:
                 "source": row["source"] if row else "extern",
                 "created_at": iso(o.created_at or o.submitted_at),
                 "filled_at": iso(o.filled_at),
+                "stop_price": o.stop_price,
+                "limit_price": o.limit_price,
                 "updated_at": iso(o.updated_at),
                 "cancelable": is_open_status(o.status) and o.status != "pending_cancel",
                 "message": row["message"] if row else None,
@@ -153,7 +159,7 @@ def _merged_orders(ctx: AppContext, mode: str) -> list[dict]:
             "client_order_id": cid,
             "symbol": r["symbol"],
             "side": r["side"],
-            "type": "market",
+            "type": r.get("order_type") or "market",
             "time_in_force": r["time_in_force"],
             "qty": float(r["qty"]) if r["qty"] else None,
             "notional": float(r["notional"]) if r["notional"] else None,
@@ -163,6 +169,8 @@ def _merged_orders(ctx: AppContext, mode: str) -> list[dict]:
             "source": r["source"],
             "created_at": r["created_at"],
             "filled_at": None,
+            "stop_price": r.get("stop_price"),
+            "limit_price": r.get("limit_price"),
             "updated_at": r["updated_at"],
             "cancelable": bool(r["broker_order_id"])
             and r["status"] not in FINAL_ORDER_STATUSES | LOCAL_FINAL,
@@ -234,10 +242,16 @@ class OrderBody(OrderInput):
     confirm: bool = False
 
 
+def _manual_market_only(body: OrderBody) -> None:
+    if body.type != "market":
+        raise HTTPException(400, "Manuelle Orders sind in dieser Version Market-Orders.")
+
+
 @router.post("/orders/preview")
 async def order_preview(body: OrderBody, request: Request) -> dict:
     ctx = ctx_of(request)
     require_mode(ctx, body.expected_mode)
+    _manual_market_only(body)
     return await ctx.orders.preview(ctx.mode, OrderInput(**body.model_dump(include=set(OrderInput.model_fields))))
 
 
@@ -245,6 +259,7 @@ async def order_preview(body: OrderBody, request: Request) -> dict:
 async def order_submit(body: OrderBody, request: Request) -> dict:
     ctx = ctx_of(request)
     require_mode(ctx, body.expected_mode)
+    _manual_market_only(body)
     if not body.confirm or not body.idempotency_key:
         raise HTTPException(400, "Bitte die Zusammenfassung prüfen und ausdrücklich bestätigen.")
     inp = OrderInput(**body.model_dump(include=set(OrderInput.model_fields)))
@@ -336,6 +351,8 @@ async def get_settings(request: Request) -> dict:
         "risk_limits": get_risk_limits(ctx.db, ctx.mode).model_dump(),
         "bot_params": get_bot_params(ctx.db, ctx.mode).model_dump(),
         "defaults": {"risk_limits": RiskLimits().model_dump(), "bot_params": BotParams().model_dump()},
+        "notify": ctx.notifier.describe(),
+        "resume": ctx.resume_info(),
         "note": "Standardwerte sind kleine technische Paper-Testwerte, keine Empfehlung.",
     }
 
@@ -371,6 +388,38 @@ async def put_bot(body: BotBody, request: Request) -> dict:
     set_bot_params(ctx.db, ctx.mode, params)
     ctx.db.add_event(ctx.mode, "info", "settings", "Strategieparameter geändert.", params.model_dump())
     return await get_settings(request)
+
+
+@router.put("/settings/notify")
+async def put_notify(body: NotifySettings, request: Request) -> dict:
+    ctx = ctx_of(request)
+    set_notify_settings(ctx.db, body)
+    ctx.db.add_event(ctx.mode, "info", "settings", "Benachrichtigungs-Einstellungen geändert.", body.model_dump())
+    return ctx.notifier.describe()
+
+
+@router.post("/notify/test")
+async def notify_test(request: Request) -> dict:
+    ctx = ctx_of(request)
+    last = ctx.notifier.last_test_at
+    if last is not None and (ctx._now() - last).total_seconds() < 10:
+        raise HTTPException(429, "Bitte einige Sekunden bis zur nächsten Testnachricht warten.")
+    ctx.notifier.last_test_at = ctx._now()
+    return await ctx.notifier.send_test()
+
+
+class ResumeBody(BaseModel):
+    enabled: bool
+    confirm: bool = False
+
+
+@router.put("/settings/resume")
+async def put_resume(body: ResumeBody, request: Request) -> dict:
+    ctx = ctx_of(request)
+    if body.enabled and not body.confirm:
+        raise HTTPException(400, "Fortsetzen nach Neustart muss ausdrücklich bestätigt werden.")
+    ctx.set_resume_enabled(body.enabled)
+    return ctx.resume_info()
 
 
 # -------------------------------------------------------------------- Bot

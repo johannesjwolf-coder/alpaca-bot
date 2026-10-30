@@ -50,6 +50,7 @@ DEMO_ASSETS: dict[str, tuple[str, float, bool]] = {
     # Krypto (24/7, stärkere Schwankungen)
     "BTC/USD": ("DEMO Bitcoin", 68_000.0, True),
     "ETH/USD": ("DEMO Ether", 3_400.0, True),
+    "SOL/USD": ("DEMO Solana", 150.0, True),
 }
 DEMO_SPREAD_PCT = 0.02  # simulierter Abstand zwischen Geld- und Briefkurs in %
 PARTIAL_FILL_DELAY_S = 1.0
@@ -133,7 +134,7 @@ class DemoBroker(Broker):
             client_order_id=r["client_order_id"],
             symbol=r["symbol"],
             side=r["side"],
-            type="market",
+            type=r.get("order_type") or "market",
             time_in_force=r["time_in_force"],
             qty=r["qty"],
             notional=r["notional"],
@@ -145,6 +146,8 @@ class DemoBroker(Broker):
             submitted_at=parse_iso(r["created_at"]),
             filled_at=parse_iso(r["filled_at"]),
             canceled_at=parse_iso(r["canceled_at"]),
+            stop_price=r.get("stop_price"),
+            limit_price=r.get("limit_price"),
         )
 
     def _apply_fill(self, c, order: dict, fill_qty: float, price: float, now: datetime) -> str:
@@ -198,6 +201,15 @@ class DemoBroker(Broker):
                 age = (now - parse_iso(order["created_at"])).total_seconds()
                 bid, ask = demo_quote_prices(order["symbol"], now.timestamp())
                 price = ask if order["side"] == "buy" else bid  # Käufe zum Brief-, Verkäufe zum Geldkurs
+                if order.get("order_type") == "stop_limit":
+                    # Verkaufs-Stop: löst bei Geldkurs ≤ Stop aus, ausgeführt nur bei Geldkurs ≥ Limit
+                    if bid > order["stop_price"] or bid < order["limit_price"]:
+                        continue
+                    remaining = order["qty"] - (order["filled_qty"] or 0.0)
+                    status = self._apply_fill(c, order, remaining, bid, now)
+                    if status == "rejected":
+                        c.execute("UPDATE demo_orders SET status='rejected', updated_at=? WHERE id=?", (iso(now), order["id"]))
+                    continue
                 if order["notional"] is not None and order["qty"] is None:
                     if age < PARTIAL_FILL_DELAY_S:
                         continue
@@ -358,7 +370,8 @@ class DemoBroker(Broker):
         oid = str(uuid.uuid4())
         self.db.execute(
             "INSERT INTO demo_orders (id, client_order_id, symbol, side, qty, notional, time_in_force, status, "
-            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)",
+            "created_at, updated_at, order_type, stop_price, limit_price) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, ?)",
             (
                 oid,
                 req.client_order_id,
@@ -369,6 +382,9 @@ class DemoBroker(Broker):
                 req.time_in_force,
                 iso(now),
                 iso(now),
+                req.type,
+                float(req.stop_price) if req.stop_price is not None else None,
+                float(req.limit_price) if req.limit_price is not None else None,
             ),
         )
         return await self.get_order(oid)

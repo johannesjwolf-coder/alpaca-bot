@@ -64,7 +64,11 @@ class FakeAlpaca:
                      "status": "inactive", "tradable": False, "fractionable": False},
             # Krypto wird über "BTCUSD" nachgeschlagen, Alpaca antwortet mit "BTC/USD"
             "BTCUSD": {"symbol": "BTC/USD", "name": "Bitcoin", "class": "crypto", "exchange": "CRYPTO",
-                       "status": "active", "tradable": True, "fractionable": True, "min_order_size": "0.0001"},
+                       "status": "active", "tradable": True, "fractionable": True, "min_order_size": "0.0001",
+                       "price_increment": "0.01"},
+            "ETHUSD": {"symbol": "ETH/USD", "name": "Ether", "class": "crypto", "exchange": "CRYPTO",
+                       "status": "active", "tradable": True, "fractionable": True, "min_order_size": "0.001",
+                       "price_increment": "0.01"},
         }
         self.crypto_quotes: dict[str, dict] = {}
         self.prices = {"SPY": 10.0, "BRK.A": 600000.0}
@@ -167,7 +171,8 @@ class FakeAlpaca:
         if host == "data.alpaca.markets" and path.startswith("/v1beta3/crypto/us/"):
             sym = q["symbols"][0]
             if path.endswith("/latest/quotes"):
-                quotes = {sym: self.crypto_quotes[sym]} if sym in self.crypto_quotes else {}
+                wanted = sym.split(",")
+                quotes = {x: self.crypto_quotes[x] for x in wanted if x in self.crypto_quotes}
                 return httpx.Response(200, json={"quotes": quotes})
             if path.endswith("/latest/trades"):
                 cq = self.crypto_quotes.get(sym)
@@ -223,7 +228,8 @@ class FakeAlpaca:
             if any(o["client_order_id"] == body["client_order_id"] for o in self.orders.values()):
                 return httpx.Response(422, json={"message": "client_order_id must be unique"})
             o = self.add_order(**{k: body.get(k) for k in ("symbol", "side", "qty", "notional", "time_in_force", "client_order_id")},
-                               status="accepted")
+                               status="accepted" if body.get("type", "market") == "market" else "new")
+            o.update(type=body.get("type", "market"), stop_price=body.get("stop_price"), limit_price=body.get("limit_price"))
             return httpx.Response(200, json=o)
         if path.startswith("/v2/orders/") and method == "GET":
             o = self.orders.get(path.rsplit("/", 1)[1])
@@ -235,6 +241,13 @@ class FakeAlpaca:
             o["status"] = "canceled"
             return httpx.Response(204)
         return httpx.Response(500, json={"message": f"unhandled {method} {path}"})
+
+
+@pytest.fixture(autouse=True)
+def _no_ntfy_env(monkeypatch):
+    """Benachrichtigungen in Tests nur mit ausdrücklich übergebenem Mock-Ziel."""
+    for key in ("NTFY_TOPIC", "NTFY_URL", "NTFY_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
 
 
 @pytest.fixture

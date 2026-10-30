@@ -100,10 +100,11 @@ class BotEngine:
                 self.scalper.reset(params)
                 interval = params.poll_interval_s
                 what = (
-                    f"Scalping {params.symbol}: Mikrokerzen {params.bar_seconds} s, SMA{params.short_window}/"
+                    f"Scalping {', '.join(params.scalp_symbols)}: Mikrokerzen {params.bar_seconds} s, SMA{params.short_window}/"
                     f"SMA{params.long_window}, Einsatz {params.order_value:g} USD, Stop-Loss −{params.stop_loss_pct:g} %, "
                     f"Take-Profit +{params.take_profit_pct:g} %, max. {params.max_hold_min:g} Min., "
-                    f"Kursabruf alle {params.poll_interval_s:g} s. Teststrategie ohne Gewinnzusage."
+                    f"Kursabruf alle {params.poll_interval_s:g} s, Schutzorder beim Broker "
+                    f"{'aktiv' if params.broker_stop else 'aus'}. Teststrategie ohne Gewinnzusage."
                 )
             else:
                 await self._check_sma_start(rt, params, snap)
@@ -116,26 +117,28 @@ class BotEngine:
             self.last_status = "Gestartet"
             self.strategy = params.strategy
             self._task = asyncio.create_task(self._run(mode, interval), name="alpaca-bot-loop")
-            ctx.db.add_event(mode, "info", "bot", f"Bot gestartet: {what}")
+            ctx.remember_run(mode=mode, bot=True)
+            ctx.db.add_event(mode, "info", "bot", f"Bot gestartet: {what}", push=True)
             return self.state()
 
     async def _check_scalp_start(self, rt, params: BotParams) -> None:
-        """Krypto: 24/7 – statt Börsenzeiten zählen handelbares Instrument und ein frischer Kurs."""
+        """Krypto: 24/7 – statt Börsenzeiten zählen handelbare Instrumente und frische Kurse."""
+        symbols = params.scalp_symbols
+        for symbol in symbols:
+            try:
+                asset = await rt.broker.get_asset(symbol)
+            except BrokerError as exc:
+                raise BotStartError(f"Instrument {symbol}: {exc.message}") from exc
+            if not asset.tradable or asset.status != "active" or asset.asset_class != "crypto":
+                raise BotStartError(f"Instrument {symbol} ist laut Broker nicht als Krypto handelbar.")
         try:
-            asset = await rt.broker.get_asset(params.symbol)
+            quotes = await rt.broker.get_quotes(symbols)
         except BrokerError as exc:
-            raise BotStartError(f"Instrument {params.symbol}: {exc.message}") from exc
-        if not asset.tradable or asset.status != "active" or asset.asset_class != "crypto":
-            raise BotStartError(f"Instrument {params.symbol} ist laut Broker nicht als Krypto handelbar.")
-        try:
-            quote = await rt.broker.get_quote(params.symbol)
-        except BrokerError as exc:
-            raise BotStartError(f"Kurs nicht verfügbar: {exc.message}") from exc
-        if quote is None:
-            raise BotStartError(f"Kein aktueller Geld-/Briefkurs für {params.symbol}.")
-        age = (rt._now() - quote.at).total_seconds()
-        if age > QUOTE_MAX_AGE_S:
-            raise BotStartError(f"Kurs nicht frisch (vor {age:.0f} s, erlaubt {QUOTE_MAX_AGE_S:.0f} s).")
+            raise BotStartError(f"Kurse nicht verfügbar: {exc.message}") from exc
+        now = rt._now()
+        stale = [s for s in symbols if s not in quotes or (now - quotes[s].at).total_seconds() > QUOTE_MAX_AGE_S]
+        if stale:
+            raise BotStartError(f"Kein frischer Geld-/Briefkurs für {', '.join(stale)} (erlaubt {QUOTE_MAX_AGE_S:.0f} s).")
         if params.take_profit_pct <= params.roundtrip_cost_pct:
             self.ctx.db.add_event(
                 self.ctx.mode, "warning", "bot",
@@ -181,7 +184,8 @@ class BotEngine:
         ctx.db.set(mode, self._last_processed_key(params.symbol), iso(done[-1].t))
 
 
-    async def pause(self, reason: str = "Vom Nutzer pausiert") -> dict:
+    async def pause(self, reason: str = "Vom Nutzer pausiert", *, remember: bool = True) -> dict:
+        """``remember=False`` nur beim Herunterfahren: dann bleibt „Automatik lief“ für das Fortsetzen gemerkt."""
         async with self._lock:
             task, mode = self._task, self.mode
             self._task = None
@@ -191,11 +195,14 @@ class BotEngine:
                     await task
                 except (asyncio.CancelledError, Exception):
                     pass
+                if remember:
+                    self.ctx.remember_run(bot=False)
                 self.ctx.db.add_event(
                     mode or self.ctx.mode,
                     "info",
                     "bot",
                     f"Bot pausiert ({reason}). Positionen und offene Broker-Orders bleiben unverändert.",
+                    push=True,
                 )
             self.last_status = f"Pausiert: {reason}"
             return self.state()

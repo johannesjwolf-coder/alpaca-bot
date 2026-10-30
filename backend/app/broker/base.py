@@ -124,6 +124,7 @@ class Asset(BaseModel):
     marginable: bool = False
     min_order_size: float | None = None  # Krypto: kleinste Ordermenge
     min_trade_increment: float | None = None  # Krypto: Mengenschritt
+    price_increment: float | None = None  # Krypto: Preisschritt
 
 
 class Position(BaseModel):
@@ -157,6 +158,8 @@ class Order(BaseModel):
     submitted_at: datetime | None = None
     filled_at: datetime | None = None
     canceled_at: datetime | None = None
+    stop_price: float | None = None
+    limit_price: float | None = None
 
 
 class Bar(BaseModel):
@@ -175,7 +178,9 @@ class OrderRequest(BaseModel):
     notional: Decimal | None = None
     time_in_force: str = "day"
     client_order_id: str
-    type: str = "market"
+    type: str = "market"  # market | stop_limit
+    stop_price: Decimal | None = None
+    limit_price: Decimal | None = None
 
 
 class LatestPrice(BaseModel):
@@ -259,6 +264,15 @@ class Broker(ABC):
 
     @abstractmethod
     async def get_quote(self, symbol: str) -> Quote | None: ...
+
+    async def get_quotes(self, symbols: list[str]) -> dict[str, Quote]:
+        """Kurse mehrerer Symbole (Standard: einzeln abfragen)."""
+        out: dict[str, Quote] = {}
+        for s in symbols:
+            q = await self.get_quote(s)
+            if q is not None:
+                out[s] = q
+        return out
 
     async def get_session_open(self, now: datetime) -> datetime | None:
         """Beginn der regulären Handelssitzung am Handelstag von ``now`` (UTC) oder None."""

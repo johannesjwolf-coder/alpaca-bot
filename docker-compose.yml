@@ -1,4 +1,5 @@
 # Start: docker compose up -d --build   →   http://127.0.0.1:8000
+# Auf dem Server richtet deploy/install.sh alles ein (siehe docs/SERVER.md).
 services:
   alpaca-bot:
     build: .
@@ -11,7 +12,21 @@ services:
       ALPACA_AUTH_MODE: ${ALPACA_AUTH_MODE:-env}
     volumes:
       - alpaca-bot-data:/data # SQLite-Datenbank bleibt über Neustarts erhalten
-    restart: unless-stopped # Automatik und Orderfreigabe sind nach Neustart trotzdem aus
+    # Startet nach Absturz/Server-Neustart wieder. Automatik und Orderfreigabe sind danach aus,
+    # ausser „Fortsetzen nach Neustart“ ist in den Einstellungen eingeschaltet.
+    restart: unless-stopped
+    stop_grace_period: 30s # Zeit für sauberes Pausieren und letzte Benachrichtigungen
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/status', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
 volumes:
   alpaca-bot-data:

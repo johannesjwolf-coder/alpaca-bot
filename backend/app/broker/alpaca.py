@@ -285,6 +285,8 @@ def parse_order(d: dict) -> Order:
         submitted_at=_dt(d.get("submitted_at")),
         filled_at=_dt(d.get("filled_at")),
         canceled_at=_dt(d.get("canceled_at")),
+        stop_price=_f(d.get("stop_price")),
+        limit_price=_f(d.get("limit_price")),
     )
 
 
@@ -528,6 +530,7 @@ class AlpacaPaperBroker(Broker):
             marginable=bool(d.get("marginable")),
             min_order_size=_f(d.get("min_order_size")),
             min_trade_increment=_f(d.get("min_trade_increment")),
+            price_increment=_f(d.get("price_increment")),
         )
 
     async def list_positions(self) -> list[Position]:
@@ -563,14 +566,22 @@ class AlpacaPaperBroker(Broker):
         return parse_order(d)
 
     async def submit_order(self, req: OrderRequest) -> Order:
+        if req.type not in ("market", "stop_limit"):
+            raise BrokerError("unprocessable", f"Ordertyp {req.type} wird nicht unterstützt")
         payload: dict[str, Any] = {
             "symbol": req.symbol,
             "side": req.side,
-            "type": "market",
+            "type": req.type,
             "time_in_force": req.time_in_force,
             "client_order_id": req.client_order_id,
-            "extended_hours": False,
         }
+        if not is_crypto(req.symbol):
+            payload["extended_hours"] = False
+        if req.type == "stop_limit":
+            if req.stop_price is None or req.limit_price is None:
+                raise BrokerError("unprocessable", "Stop-Limit-Order braucht Stop- und Limitpreis")
+            payload["stop_price"] = format(req.stop_price, "f")
+            payload["limit_price"] = format(req.limit_price, "f")
         if req.qty is not None:
             payload["qty"] = format(req.qty, "f")
         if req.notional is not None:
@@ -691,6 +702,26 @@ class AlpacaPaperBroker(Broker):
         if not price or at is None:
             return None
         return LatestPrice(price=price, at=at, source=source)
+
+    async def get_quotes(self, symbols: list[str]) -> dict[str, Quote]:
+        crypto = [s for s in symbols if is_crypto(s)]
+        out: dict[str, Quote] = {}
+        if crypto:
+            # Ein Abruf für alle Krypto-Paare (schont das API-Limit).
+            data = await self._request(
+                "GET", "data", f"/v1beta3/crypto/{CRYPTO_LOCATION}/latest/quotes",
+                params={"symbols": ",".join(_check_crypto(s) for s in crypto)},
+            )
+            for sym, q in ((data or {}).get("quotes") or {}).items():
+                bid, ask, at = _f(q.get("bp")), _f(q.get("ap")), _dt(q.get("t"))
+                if bid and ask and at is not None and ask >= bid and sym in crypto:
+                    out[sym] = Quote(symbol=sym, bid=bid, ask=ask, at=at, source="Alpaca Krypto (bester Geld-/Briefkurs)")
+        for s in symbols:
+            if not is_crypto(s):
+                q = await self.get_quote(s)
+                if q is not None:
+                    out[s] = q
+        return out
 
     async def get_quote(self, symbol: str) -> Quote | None:
         if is_crypto(symbol):

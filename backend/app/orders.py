@@ -51,6 +51,10 @@ class OrderInput(BaseModel):
     qty: Decimal | None = None
     notional: Decimal | None = None
     time_in_force: Literal["day", "gtc"] = "day"
+    # Nur intern (Schutzorder des Bots): Stop-Limit-Verkauf für Krypto
+    type: Literal["market", "stop_limit"] = "market"
+    stop_price: Decimal | None = None
+    limit_price: Decimal | None = None
 
 
 class OrderBlocked(Exception):
@@ -187,6 +191,22 @@ class OrderService:
 
         # 4. Menge/Betrag und Gültigkeit (Alpaca-Regeln)
         qty, notional = inp.qty, inp.notional
+        preview["type"] = inp.type
+        if inp.type == "stop_limit":
+            problems = []
+            if inp.side != "sell" or not crypto:
+                problems.append("Stop-Limit nur als Krypto-Verkauf (Schutzorder)")
+            if qty is None or notional is not None:
+                problems.append("Stop-Limit braucht eine Stückzahl")
+            if not inp.stop_price or not inp.limit_price or inp.stop_price <= 0 or inp.limit_price <= 0:
+                problems.append("Stop- und Limitpreis müssen grösser als 0 sein")
+            elif inp.limit_price > inp.stop_price:
+                problems.append("Limitpreis eines Verkaufs-Stops darf nicht über dem Stoppreis liegen")
+            checks.append(
+                Check("Schutzorder", not problems, "; ".join(problems) or f"Stop {inp.stop_price}, Limit {inp.limit_price}")
+            )
+            preview["stop_price"] = str(inp.stop_price) if inp.stop_price else None
+            preview["limit_price"] = str(inp.limit_price) if inp.limit_price else None
         if (qty is None) == (notional is None):
             checks.append(Check("Menge/Betrag", False, "Genau eines angeben: Stückzahl oder Geldbetrag"))
             return done()
@@ -257,6 +277,9 @@ class OrderService:
                 price = pos.current_price
                 preview["est_price_source"] = "Positionskurs des Brokers"
         preview["est_price"] = price
+        if inp.type == "stop_limit" and inp.stop_price:
+            price = float(inp.stop_price)
+            preview["est_price_source"] = "Stoppreis der Schutzorder"
         est_value = float(notional) if notional is not None else (float(qty) * price if price else None)
         preview["est_value"] = round(est_value, 2) if est_value is not None else None
 
@@ -309,8 +332,9 @@ class OrderService:
             cid = new_client_order_id(mode, source)
             cur = db.execute(
                 "INSERT INTO orders (mode, client_order_id, idempotency_key, source, symbol, side, qty, notional, "
-                "time_in_force, status, est_price, est_value, trading_day, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "time_in_force, status, est_price, est_value, trading_day, created_at, updated_at, order_type, "
+                "stop_price, limit_price) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     mode,
                     cid,
@@ -327,6 +351,9 @@ class OrderService:
                     trading_day(now),
                     iso(now),
                     iso(now),
+                    inp.type,
+                    float(inp.stop_price) if inp.stop_price is not None else None,
+                    float(inp.limit_price) if inp.limit_price is not None else None,
                 ),
             )
             row_id = int(cur.lastrowid)
@@ -337,6 +364,9 @@ class OrderService:
                 notional=inp.notional,
                 time_in_force=inp.time_in_force,
                 client_order_id=cid,
+                type=inp.type,
+                stop_price=inp.stop_price,
+                limit_price=inp.limit_price,
             )
             try:
                 order = await rt.broker.submit_order(req)
@@ -415,6 +445,22 @@ class OrderService:
         if not await rt.sync():
             raise rt.last_error or BrokerError("broker_error", "Brokerzustand nicht abrufbar")
         assert rt.snapshot is not None
+        blocking = [o for o in rt.snapshot.open_orders if o.symbol == symbol and o.side == "sell" and is_open_status(o.status)]
+        if blocking:
+            # Offene Verkaufsorders (z. B. Schutzorder des Bots) binden den Bestand → zuerst stornieren.
+            for o in blocking:
+                try:
+                    await rt.broker.cancel_order(o.id)
+                except BrokerError:
+                    pass
+            self.ctx.db.add_event(mode, "info", "order", f"{len(blocking)} offene Verkaufsorder(s) {symbol} vor dem Schliessen storniert.")
+            for _ in range(5):
+                if not await rt.sync():
+                    break
+                assert rt.snapshot is not None
+                if not any(o.symbol == symbol and o.side == "sell" and is_open_status(o.status) for o in rt.snapshot.open_orders):
+                    break
+                await asyncio.sleep(0.5)
         qty = available_to_sell(rt.snapshot.positions, rt.snapshot.open_orders, symbol)
         if qty <= 0:
             raise OrderBlocked(

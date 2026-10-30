@@ -6,7 +6,8 @@ Privater Trading-Bot mit Weboberfläche für das **Alpaca-Paper-Konto** (Spielge
 * **Zwei ausdrücklich gewählte Betriebsarten:** `DEMO` (lokale, reproduzierbare Beispieldaten, simulierte Orders, kein Alpaca-Zugriff) und `PAPER` (Ihr echtes Alpaca-Paper-Konto). Die Anwendung startet immer in `DEMO`, mit pausiertem Bot und gesperrter Paper-Orderfreigabe.
 * **Keine Zugangsdaten im Frontend.** Nur das Backend authentifiziert sich bei Alpaca.
 * **Backtest** auf historischen 1-Minuten-Kerzen mit Kennzahlen, Equity-Kurve und gespeicherten Läufen zum Vergleichen (Stufe 2).
-* **Zwei Teststrategien:** Scalping für Krypto (z. B. `BTC/USD`, Standard) und eine Minutenstrategie für US-Aktien/ETFs. Beide dienen **nur zum Prüfen der Automatik**. Sie sind weder validiert noch auf Gewinn ausgelegt und keine Anlageempfehlung.
+* **Zwei Teststrategien:** Scalping für Krypto (Standard: `BTC/USD`, `ETH/USD`, `SOL/USD` parallel) und eine Minutenstrategie für US-Aktien/ETFs. Beide dienen **nur zum Prüfen der Automatik**. Sie sind weder validiert noch auf Gewinn ausgelegt und keine Anlageempfehlung.
+* **Serverbetrieb (Stufe 3):** rund um die Uhr auf einem eigenen Linux-Server. Die Oberfläche ist nur über Tailscale erreichbar, Push-Nachrichten kommen über ntfy, nach jedem Kauf setzt der Bot eine Schutzorder (Stop-Limit) beim Broker. Optional setzt er die Automatik nach einem Neustart fort. Anleitung: **[docs/SERVER.md](docs/SERVER.md)**.
 
 ![Übersicht im DEMO-Modus](docs/screenshots/01-uebersicht.png)
 
@@ -21,9 +22,10 @@ Privater Trading-Bot mit Weboberfläche für das **Alpaca-Paper-Konto** (Spielge
    * [Oberfläche und Chart](#oberfläche-und-chart)
    * [Backtest](#backtest)
 5. [Betrieb auf dem Windows-PC](#betrieb-auf-dem-windows-pc)
-6. [Betrieb auf einem Linux-Server (mit/ohne Docker)](#betrieb-auf-einem-linux-server)
+6. [Betrieb auf einem Linux-Server](#betrieb-auf-einem-linux-server) – Schritt für Schritt: [docs/SERVER.md](docs/SERVER.md)
 7. [Erreichbarkeit der Oberfläche](#erreichbarkeit-der-oberfläche)
 8. [Risikogrenzen, Strategie und Zuverlässigkeit](#risikogrenzen-strategie-und-zuverlässigkeit)
+   * [Benachrichtigungen und Neustart](#benachrichtigungen-und-neustart)
 9. [Typische Fehler](#typische-fehler)
 10. [Prüfstand dieser Version](#prüfstand-dieser-version)
 
@@ -142,10 +144,10 @@ Nach dem Start (siehe unten) `http://127.0.0.1:8000` öffnen. Oben rechts steht 
 ### 4. Automatik ausdrücklich starten
 *Bot*: Strategie wählen und Parameter prüfen → **Start**.
 
-* **Scalping Krypto** (Standard, `BTC/USD`): handelt rund um die Uhr. Start nur bei gültiger Konfiguration, erfolgreichem Kontoabgleich, aktivem Brokerstatus, handelbarem Krypto-Instrument, frischem Kurs (≤ 15 s) und (PAPER) aktiver Orderfreigabe. Danach sammelt der Bot rund 3 Minuten Mikrokerzen, bevor er einsteigen kann.
+* **Scalping Krypto** (Standard: `BTC/USD`, `ETH/USD`, `SOL/USD`, bis zu 5 Paare): handelt rund um die Uhr. Start nur bei gültiger Konfiguration, erfolgreichem Kontoabgleich, aktivem Brokerstatus, handelbaren Krypto-Instrumenten, frischen Kursen (≤ 15 s) für **alle** Symbole und (PAPER) aktiver Orderfreigabe. Danach sammelt der Bot rund 3 Minuten Mikrokerzen, bevor er einsteigen kann.
 * **SMA Aktien (Minuten)**: Start zusätzlich nur bei geöffneter US-Börse, regulärer Handelssitzung und frischer Minutenkerze.
 
-**Pause** stoppt alle *neuen automatischen* Aufträge – beim Scalping also auch die automatischen Ausstiege. Offene Positionen bleiben bestehen, bereits gesendete Broker-Orders bleiben aktiv. **Stornieren**, **Position schliessen…** und **Not-Aus** sind separate, ausdrücklich ausgelöste Aktionen.
+**Pause** stoppt alle *neuen automatischen* Aufträge – beim Scalping also auch Take-Profit und Haltedauer. Offene Positionen bleiben bestehen, bereits gesendete Broker-Orders bleiben aktiv, darunter die **Schutzorder** (Stop-Limit), die den Stop-Loss auch bei pausiertem Bot absichert. **Stornieren**, **Position schliessen…** und **Not-Aus** sind separate, ausdrücklich ausgelöste Aktionen.
 
 **Not-Aus** (roter Knopf in der Kopfzeile): Bot sofort pausieren, alle offenen Orders stornieren und alle Positionen per Market-Order schliessen. Im PAPER-Modus werden Positionen nur bei aktiver Paper-Orderfreigabe geschlossen; sonst werden nur die Orders storniert und das Ergebnis angezeigt.
 
@@ -206,7 +208,21 @@ cd backend; uv run python -m app.connection_check
 
 ## Betrieb auf einem Linux-Server
 
-### Mit Docker Compose (empfohlen)
+### Empfohlen: Installationsskript (Hetzner/Ubuntu 24.04, Tailscale, ntfy)
+
+Die vollständige Schritt-für-Schritt-Anleitung steht in **[docs/SERVER.md](docs/SERVER.md)**. Kurzfassung auf dem Server:
+
+```bash
+git clone -b claude/pensive-sagan-wjwgcp https://github.com/johannesjwolf-coder/alpaca-bot.git /opt/alpaca-bot
+```
+
+```bash
+bash /opt/alpaca-bot/deploy/install.sh
+```
+
+Das Skript installiert Docker, Firewall und automatische Sicherheitsupdates. Es meldet den Server bei Tailscale an, fragt die Paper-Schlüssel verdeckt ab, startet die Anwendung und richtet ein tägliches Backup ein. Erreichbar ist die Oberfläche danach unter `https://alpaca-bot.<tailnet>.ts.net`, nur für Ihre eigenen Geräte. Updates: `sudo bash /opt/alpaca-bot/deploy/update.sh`.
+
+### Manuell mit Docker Compose
 
 ```bash
 git clone https://github.com/johannesjwolf-coder/alpaca-bot.git && cd alpaca-bot
@@ -253,7 +269,7 @@ Restart=on-failure
 WantedBy=multi-user.target
 ```
 
-**Öffentliche Bereitstellung:** nicht vorgesehen. Die Anwendung hat keine Benutzeranmeldung. Wer sie später extern erreichbar machen will, braucht bewusst eingerichtete Zugangskontrolle (z. B. Reverse-Proxy mit Login/SSO oder VPN) **und HTTPS**. Zudem müssen `APP_ALLOWED_HOSTS` und `APP_ALLOWED_ORIGINS` angepasst werden. Das Backend verweigert den Start auf einer Nicht-localhost-Adresse, solange `APP_ALLOW_NONLOCAL_BIND=1` nicht ausdrücklich gesetzt ist (nur für Container gedacht).
+**Öffentliche Bereitstellung:** nicht vorgesehen. Die Anwendung hat keine Benutzeranmeldung. Für den Zugriff von unterwegs nutzt `deploy/install.sh` deshalb Tailscale (privates VPN mit HTTPS über `tailscale serve`) statt eines öffentlichen Ports. Wer einen anderen Weg wählt, braucht bewusst eingerichtete Zugangskontrolle (z. B. Reverse-Proxy mit Login/SSO) **und HTTPS**. Zudem müssen `APP_ALLOWED_HOSTS` und `APP_ALLOWED_ORIGINS` angepasst werden. Das Backend verweigert den Start auf einer Nicht-localhost-Adresse, solange `APP_ALLOW_NONLOCAL_BIND=1` nicht ausdrücklich gesetzt ist (nur für Container gedacht).
 
 ---
 
@@ -284,23 +300,29 @@ WantedBy=multi-user.target
 * **Tagesverlust** = Kontowert jetzt − Ausgangswert des Handelstags. Ausgangswert ist Alpacas `last_equity` (Kontowert zum letzten Handelsschluss), ersatzweise der erste beobachtete Kontowert des Tages. Ohne aktuelle Kontodaten werden Käufe gesperrt. Wird die Grenze verletzt, bleiben neue Käufe **bis zum nächsten Handelstag (00:00 Uhr New York)** gesperrt, auch wenn sich der Kurs erholt. Verkäufe bleiben möglich.
 * **Eigene Mittel:** Käufe nutzen nur Cash (bzw. `non_marginable_buying_power`, falls kleiner) abzüglich offener Käufe. Die *Buying Power* enthält ggf. Kredit und wird nicht als Eigenkapital gewertet.
 * **Verkäufe** reduzieren nur vorhandenen, nicht durch offene Verkaufsorders gebundenen Long-Bestand. Leerverkäufe, Hebel, Derivate und Kredit sind nicht Teil dieser Version.
-* **Orderregeln:** nur Market-Orders, geprüft gegen die Instrumentdaten des Brokers.
+* **Orderregeln:** manuell nur Market-Orders, geprüft gegen die Instrumentdaten des Brokers. Zusätzlich setzt der Scalping-Bot für Krypto **Stop-Limit-Schutzorders** (nur Verkauf, nur vorhandener Bestand, Limit ≤ Stopp). Diese Orderart ist über die API nicht manuell nutzbar.
   * US-Aktien/ETFs (`us_equity`, kein OTC): Betragsorders (≥ 1, max. 2 Nachkommastellen) und Bruchstücke (max. 9 Nachkommastellen) nur für bruchstückfähige Instrumente und nur mit Gültigkeit `day`; ganze Stück auch mit `gtc`.
   * Krypto (`crypto`, nur Paare gegen USD wie `BTC/USD`): Gültigkeit immer `gtc`, Mindestmenge laut Broker, Kauf zum Brief-, Verkauf zum Geldkurs. Alpaca berechnet je Ausführung eine Gebühr.
 
 ### Scalping-Strategie (Krypto)
-Standardwerte (technische Paper-Testwerte, von Ihnen bestätigt): Einsatz 50 USD je Trade, Stop-Loss 0,3 %, Take-Profit 0,6 %, max. Haltedauer 10 Min., Mikrokerzen à 10 s, Durchschnitte über 6 bzw. 18 Mikrokerzen (1 bzw. 3 Minuten), Kursabruf alle 2 s, geschätzte Gebühr 0,25 % je Ausführung.
+Standardwerte (technische Paper-Testwerte, von Ihnen bestätigt): `BTC/USD`, `ETH/USD` und `SOL/USD` parallel, Einsatz 50 USD je Symbol und Trade, Stop-Loss 0,3 %, Take-Profit 0,6 %, max. Haltedauer 10 Min., Mikrokerzen à 10 s, Durchschnitte über 6 bzw. 18 Mikrokerzen (1 bzw. 3 Minuten), Kursabruf alle 2 s, geschätzte Gebühr 0,25 % je Ausführung, Schutzorder beim Broker an (Limit 0,5 % unter dem Stopp).
 
-1. Alle 2 Sekunden holt der Bot den besten Geld-/Briefkurs (`data.alpaca.markets/v1beta3/crypto/us`) und sortiert den Mittelkurs in Mikrokerzen ein. Bei Lücken über 30 s (Verbindungsabbruch) beginnt die Reihe neu.
-2. **Einstieg** nur bei einer Aufwärtskreuzung des kurzen über den langen Durchschnitt auf einer abgeschlossenen Mikrokerze (jede Kerze höchstens einmal), nur ohne laufenden Trade und nur wenn alle Risikoprüfungen bestehen (u. a. Spread, Einstiege pro Stunde/Tag, Verlustserie, Tagesverlust).
-3. **Ausstieg** sobald der Geldkurs den Stop-Loss oder das Kursziel erreicht oder die Haltedauer abläuft. Verkauft wird höchstens der verfügbare Bestand (Gebühren können ihn leicht verringern).
-4. Jeder Trade erscheint mit Einstieg, Ausstieg, Grund, Brutto, geschätzten Kosten und Netto unter *Bot → Trades*.
+1. Alle 2 Sekunden holt der Bot die besten Geld-/Briefkurse **aller Symbole in einer Anfrage** (`data.alpaca.markets/v1beta3/crypto/us`) und sortiert den Mittelkurs je Symbol in Mikrokerzen ein. Bei Lücken über 30 s (Verbindungsabbruch) beginnt die Reihe neu.
+2. **Einstieg** je Symbol nur bei einer Aufwärtskreuzung des kurzen über den langen Durchschnitt auf einer abgeschlossenen Mikrokerze (jede Kerze höchstens einmal), nur ohne laufenden Trade in diesem Symbol und nur wenn alle Risikoprüfungen bestehen (u. a. Spread, Einstiege pro Stunde/Tag, Verlustserie, Tagesverlust). Die Risikogrenzen gelten **gemeinsam** für alle Symbole: Bei 3 Symbolen à 50 USD reicht das Standard-Gesamtlimit von 200 USD für alle gleichzeitig.
+3. **Schutzorder:** Sobald der Kauf ausgeführt ist, legt der Bot beim Broker eine Stop-Limit-Verkaufsorder über den verfügbaren Bestand an (Stopp = Stop-Loss-Kurs, Limit 0,5 % darunter, Gültigkeit `gtc`). Sie schützt die Position auch dann, wenn Bot oder Server ausfallen.
+4. **Ausstieg** sobald der Geldkurs das Kursziel erreicht oder die Haltedauer abläuft: Der Bot storniert zuerst die Schutzorder und verkauft dann per Market-Order. Beim **Stop-Loss** übernimmt die Schutzorder. Wird sie bei einem Kurssprung unter das Limit nicht ausgeführt, storniert der Bot sie nach 20 Sekunden und verkauft selbst. Verkauft wird höchstens der verfügbare Bestand (Gebühren können ihn leicht verringern). Ohne Schutzorder (abschaltbar) verkauft der Bot beim Stop-Loss direkt.
+5. Jeder Trade erscheint mit Einstieg, Ausstieg, Grund, Brutto, geschätzten Kosten und Netto unter *Bot → Trades*. Füllt die Schutzorder, während der Bot pausiert ist, erkennt der Hintergrundabgleich das und schliesst den Trade („Stop-Loss (Schutzorder)“).
 
 **Kosten:** Mit 0,25 % Gebühr je Ausführung kostet ein Trade rund 0,5 % plus Spread. Bei 0,6 % Take-Profit bleiben netto höchstens rund 0,1 %, ein Stop-Loss kostet netto rund 0,8 %. Die UI rechnet das bei den Parametern vor und warnt, wenn das Ziel nicht über den Kosten liegt. Ob das Paper-Konto Krypto-Gebühren abbildet, ist nicht geprüft; die Trades-Tabelle zeigt deshalb geschätzte Kosten.
 
 **„Echtzeit“ in dieser Version:** Der Bot fragt den Kurs alle 2 Sekunden ab, statt einen WebSocket-Datenstrom zu nutzen. Ein Datenstrom liefe über einen weiteren Host (`stream.data.alpaca.markets`) mit eigener Anmeldung per Nachricht – das widerspräche der Vorgabe, Marktdaten nur über `data.alpaca.markets` zu holen, und ist im Proxy-Modus von Claude Code im Web so nicht prüfbar. Für die eingestellten Schwellen (0,3–0,6 %, Minuten) reicht der 2-Sekunden-Takt; für echten Hochfrequenzhandel taugt die Anwendung nicht.
 
-![Bot-Seite: Strategie, Parameter und Kostenrechnung](docs/screenshots/04-bot.png)
+![Bot-Seite: Live-Status je Symbol, Parameter, Schutzorder und Kostenrechnung](docs/screenshots/04-bot.png)
+
+### Benachrichtigungen und Neustart
+
+* **Push-Nachrichten (ntfy):** Für Trades, Warnungen und Fehler (Risikosperren, abgelehnte Orders, Verbindungsprobleme, Not-Aus), für Bot gestartet/pausiert und Neustart sowie täglich eine Zusammenfassung (Standard 22:00 Uhr, Zeitzone `APP_TIMEZONE`, Standard Europe/Zurich). Eingeschaltet wird das auf dem Server über `NTFY_TOPIC` in der `.env`, nicht in der Oberfläche. Unter *Einstellungen → Benachrichtigungen* wählen Sie, welche Arten gesendet werden, und schicken eine Testnachricht. Höchstens 12 Meldungen pro Minute, gleiche Meldungen höchstens alle 2 Minuten. Die Nachrichten enthalten keine Zugangsdaten, und Versandfehler beeinflussen den Handel nie.
+* **Fortsetzen nach Neustart (Standard: aus):** Standardmässig sind Automatik und Paper-Orderfreigabe nach jedem Neustart aus. Eingeschaltet (mit ausdrücklicher Bestätigung) stellt die Anwendung Modus, Freigabe und Bot wieder her, aber nur wenn der Bot beim Neustart lief. Nach 10 erfolglosen Versuchen (≈ 5 Min.) hebt sie die Freigabe wieder auf und meldet einen Fehler. Pause, Aufheben der Freigabe und Not-Aus merkt sie sich. Danach bleibt alles aus.
 
 ### Minutenstrategie (US-Aktien/ETFs)
 SMA kurz (10) und SMA lang (30) auf **vollständig abgeschlossenen** Minutenkerzen **der laufenden Handelssitzung**. Den Sitzungsbeginn liefert der Alpaca-Handelskalender (`/v2/calendar`, inkl. Feiertagen und verkürzten Tagen). Kerzen vom Vortag und vor 9:30 Uhr New York fliessen nicht ein, damit eine Kurslücke über Nacht kein Signal auslöst. Deshalb wartet der Bot nach Eröffnung, bis genug Kerzen da sind (bei 30/10 rund 31 Minuten, also bis ca. 10:01 Uhr New York); der Entscheidungsverlauf zeigt das als „Zu wenige Kerzen der laufenden Sitzung“. Im Chart beginnen die Durchschnitte ebenfalls erst am Sitzungsbeginn. DEMO simuliert einen durchgehenden Markt ohne Sitzungsfilter. Ein Signal entsteht nur beim tatsächlichen Kreuzen. Gekauft wird nur ohne Position und ohne offene Kauforder (bruchstückfähig: Betragsorder in Höhe des Zielwerts, sonst ganze Stück). Verkauft wird nur der verfügbare Bestand. Jede Kerze wird höchstens einmal verarbeitet: Der Zeitstempel wird gespeichert, bevor eine Order gesendet wird, und ist Teil des Idempotenzschlüssels. Jede Entscheidung erscheint mit Begründung im *Entscheidungsverlauf*.
@@ -343,7 +365,7 @@ SMA kurz (10) und SMA lang (30) auf **vollständig abgeschlossenen** Minutenkerz
 
 Ausgeführt in der Claude-Code-Cloud am 30.10.2026:
 
-* Backend: `uv run pytest -q` → **132 Tests bestanden** (Stand nach Backtest/Stufe 2) (Mock-Tests, kein Netzwerk). Abgedeckt: Verbindungsantworten und Auth-Fehler, strikte Paper-Zieladressen/Redirects, Demo/Paper-Trennung, Risiko- und Bestandsgrenzen, Tagesverlust mit Tageswechsel, Mehrfachstarts (auch parallel), Order-Duplikate nach Timeouts, Neustartabgleich mit Teilausführung, wiederholte Strategiesignale, CSRF/Origin/Host-Schutz.
+* Backend: `uv run pytest -q` → **159 Tests bestanden** (Stand Stufe 3) (Mock-Tests, kein Netzwerk). Abgedeckt: Verbindungsantworten und Auth-Fehler, strikte Paper-Zieladressen/Redirects, Demo/Paper-Trennung, Risiko- und Bestandsgrenzen, Tagesverlust mit Tageswechsel, Mehrfachstarts (auch parallel), Order-Duplikate nach Timeouts, Neustartabgleich mit Teilausführung, wiederholte Strategiesignale, CSRF/Origin/Host-Schutz.
 * Frontend: `npm run typecheck`, `npm run build` und `npm audit --omit=dev` (0 Schwachstellen) fehlerfrei.
 * Neues Design (Stufe 2) im Headless-Chromium geprüft, Desktop 1440 px und Smartphone 390 px: Übersicht mit Kennzahlen, Chart (Fadenkreuz-Legende, Mausrad-Zoom, Intervallwechsel), Symbolauswahl mit Vorschlägen und Suche, Eingabevalidierung, Bestätigungsdialog und Demo-Kauf, Orderverlauf, Handel, Bot, Backtest-Lauf, Einstellungen, Moduswechsel nach PAPER mit gestaltetem Fehlerzustand, Diagnose, mobiles Menü. Keine Konsolenfehler, keine horizontale Seiten-Scrollleiste (390/390 px). Kontraste der Farbpalette berechnet (WCAG): Text mindestens 4,5:1; Gold #B8924A nur grafisch bzw. auf Anthrazit, Eingabefelder mit zusätzlichem Rahmen-Token #878F99 (3,3:1).
 * Laufende Anwendung im Headless-Chromium geprüft: DEMO-Übersicht, Chart, manuelle Betrags- und Stückzahl-Order mit Zusammenfassung und Pflichtbestätigung, Teilausführung → ausgeführt, Bot Start/Pause, Wechsel nach PAPER mit Fehleranzeige ohne Demodaten, gesperrte Paper-Orders, Diagnose und Verbindungstest, Mobilansicht. Keine Konsolenfehler.
@@ -353,6 +375,13 @@ Ausgeführt in der Claude-Code-Cloud am 30.10.2026:
 * Nicht ausgeführt: echte Paper-Orders (bewusst – diese lösen Sie selbst über die Oberfläche aus) und der Bot gegen das Paper-Konto.
 * Sitzungsfilter: mit Mock-Tests geprüft (u. a. Umrechnung Sommer-/Winterzeit, Feiertag, Kurslücke). Gegen die echte Kalender-API noch nicht geprüft, weil das Cloud-Secret nach dem Erneuern der Schlüssel ungültig war (HTTP 401). Ein Test auf dem PC zeigt es: Im Entscheidungsverlauf erscheinen nach Eröffnung zunächst Einträge „Zu wenige Kerzen der laufenden Sitzung“.
 * Krypto/Scalping (Stufe 1): mit Mock-Tests geprüft – Krypto-Symbole und -Pfade, Spread-Filter, Einstiege pro Stunde, Verlustserien-Pause, kompletter Trade mit Take-Profit inkl. Gebühren, Stop-Loss, Haltedauer, kein Ausstieg bei Pause, veraltete Kurse, Not-Aus (DEMO und PAPER ohne Freigabe). Im DEMO-Modus mit simulierter Uhr über 45 Minuten (8 Trades) und im Browser in Echtzeit geprüft. **Gegen die echte Alpaca-Krypto-API noch nicht geprüft**, weil das Cloud-Secret noch die alten Schlüssel enthielt (HTTP 401).
+* **Stufe 3 (30.10.2026), nur Mocks und DEMO:**
+  * *Schutzorder:* Stop-Limit nach dem Kauf über den verfügbaren Bestand, Take-Profit storniert erst und verkauft dann, Stop-Loss über die Schutzorder, Ersatzverkauf nach 20 s ohne Ausführung, Erkennung einer Ausführung bei pausiertem Bot, „Position schliessen“ storniert zuerst, Prüfregeln (nur Verkauf, Limit ≤ Stopp), manuelle Stop-Orders gesperrt, Simulation im DEMO-Broker.
+  * *Mehrere Symbole:* ein Kursabruf für alle Symbole, unabhängige Einstiege, gemeinsame Risikogrenzen.
+  * *ntfy:* über einen gemockten Server geprüft – Konfigurationsprüfung, Kategorien, Nur-PAPER, Duplikat- und Ratenbegrenzung, Fehler ohne Abbruch, Tageszusammenfassung einmal pro Tag. Thema und Token erscheinen in keiner API-Antwort.
+  * *Fortsetzen nach Neustart:* standardmässig aus, mit Bestätigung einschaltbar, Wiederherstellung nach Neustart, Aufgeben nach Fehlversuchen.
+  * *Oberfläche:* Symbolliste, Live-Status je Symbol, Einstellungen für Benachrichtigungen und Neustart im Headless-Chromium bei 1440 px und 390 px geprüft, ohne Konsolenfehler und ohne horizontales Scrollen. Eine Testnachricht ging per HTTP an einen lokalen Test-Empfänger.
+  * *Server-Skripte:* Syntax geprüft, `.env`-Hilfen mit Platzhalterwerten getestet. Auf einem echten Ubuntu-Server noch **nicht** ausgeführt; das geschieht bei der Installation (docs/SERVER.md). Schutzorders gegen die echte Alpaca-API sind ebenfalls noch nicht geprüft; das zeigt der erste PAPER-Lauf des Bots.
 
 | PAPER-Fehlerzustand (ohne Demodaten) | Smartphone |
 | --- | --- |

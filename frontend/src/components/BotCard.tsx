@@ -19,7 +19,9 @@ export function BotCard({ status, onChange, onNavigate }: { status: Status; onCh
   const params = info.data?.params;
   const live = info.data?.state.scalper;
   const summary = info.data?.summary;
-  const trade = live?.trade;
+  const scalp = params?.strategy === "scalp";
+  const views = Object.entries(live?.symbols ?? {});
+  const openTrades = views.filter(([, v]) => v.trade);
 
   async function start() {
     if (!params) return;
@@ -30,9 +32,10 @@ export function BotCard({ status, onChange, onNavigate }: { status: Status; onCh
         <dl className="kv">
           <dt>Modus</dt><dd><strong>{status.mode}</strong></dd>
           <dt>Strategie</dt><dd>{params.strategy === "scalp" ? "Scalping Krypto" : "SMA Aktien (Minuten)"}</dd>
-          <dt>Symbol</dt><dd>{params.symbol}</dd>
-          <dt>Einsatz je Trade</dt><dd>{money(params.order_value, "USD")}</dd>
+          <dt>{params.strategy === "scalp" ? "Symbole" : "Symbol"}</dt><dd>{params.strategy === "scalp" ? params.symbols.join(", ") : params.symbol}</dd>
+          <dt>Einsatz je Trade</dt><dd>{money(params.order_value, "USD")}{params.strategy === "scalp" && params.symbols.length > 1 ? " je Symbol" : ""}</dd>
           {params.strategy === "scalp" && <><dt>Stop-Loss / Ziel</dt><dd>−{params.stop_loss_pct} % / +{params.take_profit_pct} %</dd></>}
+          {params.strategy === "scalp" && <><dt>Schutzorder</dt><dd>{params.broker_stop ? "Stop-Limit beim Broker" : "aus"}</dd></>}
         </dl>
       ),
     });
@@ -65,14 +68,8 @@ export function BotCard({ status, onChange, onNavigate }: { status: Status; onCh
         {params ? (
           <dl className="kv">
             <dt>Strategie</dt><dd>{params.strategy === "scalp" ? "Scalping Krypto" : "SMA Aktien (Minuten)"}</dd>
-            <dt>Symbol</dt><dd className="sym">{params.symbol}</dd>
-            {live?.quote && (
-              <>
-                <dt>Geld / Brief</dt>
-                <dd>{price(live.quote.bid)} / {price(live.quote.ask)} <span className="muted small">Spread {pct(live.quote.spread_pct, 3, false)}</span></dd>
-              </>
-            )}
-            {running && <><dt>Status</dt><dd>{status.bot.last_status || "—"}</dd></>}
+            <dt>{scalp ? "Symbole" : "Symbol"}</dt><dd className="sym">{scalp ? params.symbols.join(", ") : params.symbol}</dd>
+            {running && <><dt>Status</dt><dd>{live?.status || status.bot.last_status || "—"}</dd></>}
             {summary && (
               <>
                 <dt>Heute</dt>
@@ -83,12 +80,25 @@ export function BotCard({ status, onChange, onNavigate }: { status: Status; onCh
         ) : (
           <div className="skeleton" style={{ height: 96 }} />
         )}
-        {trade && (
-          <Notice title={`Offene Position: ${price(trade.entry_price)} Einstieg`}>
-            Aktuell {price(trade.bid ?? null)} · <span className={tone(trade.pnl_pct)}>{pct(trade.pnl_pct ?? null, 3)}</span>
-            <br />Stop {price(trade.stop_price)} · Ziel {price(trade.target_price)}
-          </Notice>
+        {running && views.length > 0 && (
+          <ul className="mini-quotes" aria-label="Kurse je Symbol">
+            {views.map(([sym, v]) => (
+              <li key={sym}>
+                <span className="sym">{sym}</span>
+                <span className="num">{v.quote ? `${price(v.quote.bid)} / ${price(v.quote.ask)}` : "—"}</span>
+                {v.trade
+                  ? <span className={`num ${tone(v.trade.pnl_pct)}`}>{pct(v.trade.pnl_pct ?? null, 2)}</span>
+                  : <span className="muted small">{v.quote && !v.quote.fresh ? "veraltet" : "flach"}</span>}
+              </li>
+            ))}
+          </ul>
         )}
+        {openTrades.map(([sym, v]) => v.trade && (
+          <Notice key={sym} title={`${sym}: Position seit ${price(v.trade.entry_price)}`}>
+            Aktuell {price(v.trade.bid ?? null)} · <span className={tone(v.trade.pnl_pct)}>{pct(v.trade.pnl_pct ?? null, 3)}</span>
+            <br />Stop {price(v.trade.stop_price)}{v.trade.broker_stop ? " (Schutzorder)" : ""} · Ziel {price(v.trade.target_price)}
+          </Notice>
+        ))}
         {summary?.loss_pause && <Notice tone="warn" title="Kaufpause nach Verlustserie">{summary.loss_pause.reason}</Notice>}
         {status.mode === "PAPER" && !status.orders_enabled && !running && (
           <p className="field-help">Start im PAPER-Modus erst nach Paper-Orderfreigabe.</p>
@@ -96,7 +106,7 @@ export function BotCard({ status, onChange, onNavigate }: { status: Status; onCh
         <div className="row">
           {running ? (
             <button className="btn" disabled={busy} onClick={() => act(() => api.post("/bot/pause"))}
-                    title="Stoppt neue automatische Aufträge inkl. automatischer Ausstiege. Positionen bleiben bestehen.">
+                    title="Stoppt neue automatische Aufträge inkl. automatischer Ausstiege. Positionen und Schutzorders beim Broker bleiben bestehen.">
               {busy ? <Spinner /> : <Icon name="pause" size={16} />} Pausieren
             </button>
           ) : (
@@ -106,7 +116,7 @@ export function BotCard({ status, onChange, onNavigate }: { status: Status; onCh
           )}
           <button className="btn ghost" onClick={() => onNavigate("bot")}>Details</button>
         </div>
-        <p className="field-help">Pause stoppt neue automatische Aufträge – auch Stop-Loss/Take-Profit. Positionen bleiben bestehen.</p>
+        <p className="field-help">Pause stoppt neue automatische Aufträge inkl. Take-Profit/Haltedauer. Positionen und gesetzte Schutzorders bleiben bestehen.</p>
         {msg && <Notice tone="error">{msg}</Notice>}
       </div>
     </section>

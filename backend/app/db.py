@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -175,6 +175,8 @@ class Database:
         if str(path) != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.path = str(path)
+        # Beobachter für neue Ereignisse (z. B. Push-Benachrichtigungen); Fehler dort stören nie den Handel.
+        self.event_listeners: list[Callable[[str, str, str, str, bool], None]] = []
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
         self._conn.row_factory = sqlite3.Row
@@ -182,6 +184,20 @@ class Database:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA busy_timeout=5000")
             self._conn.executescript(SCHEMA)
+            self._migrate()
+
+    def _migrate(self) -> None:
+        """Neue Spalten in bestehenden Datenbanken ergänzen (idempotent)."""
+        wanted = {
+            "orders": [("order_type", "TEXT NOT NULL DEFAULT 'market'"), ("stop_price", "REAL"), ("limit_price", "REAL")],
+            "trades": [("stop_cid", "TEXT"), ("stop_attempts", "INTEGER NOT NULL DEFAULT 0"), ("sl_seen_at", "TEXT")],
+            "demo_orders": [("order_type", "TEXT NOT NULL DEFAULT 'market'"), ("stop_price", "REAL"), ("limit_price", "REAL")],
+        }
+        for table, cols in wanted.items():
+            have = {r[1] for r in self._conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            for name, decl in cols:
+                if name not in have:
+                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
     def close(self) -> None:
         with self._lock:
@@ -225,11 +241,19 @@ class Database:
         )
 
     # -------------------------------------------------------------- events
-    def add_event(self, mode: str, level: str, category: str, message: str, data: dict | None = None) -> None:
+    def add_event(
+        self, mode: str, level: str, category: str, message: str, data: dict | None = None, *, push: bool = False
+    ) -> None:
+        """Ereignis speichern. ``push`` markiert Meldungen, die sich als Benachrichtigung eignen."""
         self.execute(
             "INSERT INTO events (mode, ts, level, category, message, data) VALUES (?, ?, ?, ?, ?, ?)",
             (mode, iso(utcnow()), level, category, message, json.dumps(data) if data else None),
         )
+        for listener in self.event_listeners:
+            try:
+                listener(mode, level, category, message, push)
+            except Exception:  # noqa: BLE001
+                pass
 
     def list_events(self, mode: str, limit: int = 100) -> list[dict[str, Any]]:
         rows = self.query("SELECT * FROM events WHERE mode=? ORDER BY id DESC LIMIT ?", (mode, limit))

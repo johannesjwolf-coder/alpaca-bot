@@ -193,7 +193,7 @@ def test_symbol_suggestions_demo_and_search(client, fake):
     demo = client.get("/api/symbols").json()
     symbols = [i["symbol"] for i in demo["items"]]
     assert symbols[0] == "BTC/USD" and demo["items"][0]["group"] == "Bot"
-    assert "SPY" in symbols and "SOL/USD" not in symbols  # DEMO kennt SOL nicht
+    assert "SPY" in symbols and "TSLA" not in symbols  # DEMO kennt TSLA nicht
     assert [i["symbol"] for i in client.get("/api/symbols?q=eth").json()["items"]] == ["ETH/USD"]
     client.post("/api/mode", json={"mode": "PAPER"}, headers=H)
     fake.assets["ABNB"] = {"symbol": "ABNB", "name": "Airbnb", "class": "us_equity", "exchange": "NASDAQ",
