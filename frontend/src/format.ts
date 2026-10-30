@@ -12,6 +12,38 @@ export function signedMoney(value: number | null | undefined, currency: string |
   return value > 0 ? `+${s}` : value < 0 ? `−${s}` : s;
 }
 
+/** Betrag mit genau zwei Nachkommastellen (ohne Währung). */
+export function amount2(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  return new Intl.NumberFormat(LOCALE, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
+}
+
+/** Kursformat mit sinnvoller Genauigkeit je nach Grössenordnung. */
+export function priceDigits(value: number): number {
+  const v = Math.abs(value);
+  if (v >= 1000) return 2;
+  if (v >= 1) return 2;
+  if (v >= 0.01) return 4;
+  return 6;
+}
+
+export function price(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  const d = priceDigits(value);
+  return new Intl.NumberFormat(LOCALE, { minimumFractionDigits: d, maximumFractionDigits: d }).format(value);
+}
+
+export function pct(value: number | null | undefined, digits = 2, signed = true): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  const s = new Intl.NumberFormat(LOCALE, { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(Math.abs(value));
+  return `${signed ? (value > 0 ? "+" : value < 0 ? "−" : "") : ""}${s} %`;
+}
+
+export function tone(value: number | null | undefined): string {
+  if (!value) return "";
+  return value > 0 ? "pos" : "neg";
+}
+
 export function num(value: number | null | undefined, maxDigits = 4): string {
   if (value === null || value === undefined || Number.isNaN(value)) return "—";
   return new Intl.NumberFormat(LOCALE, { maximumFractionDigits: maxDigits }).format(value);
@@ -37,6 +69,15 @@ export function dateTime(iso: string | null | undefined): string {
   if (!iso) return "—";
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? "—" : DATE_TIME.format(d);
+}
+
+const SHORT_DT = new Intl.DateTimeFormat(LOCALE, { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+
+/** Kurze Zeitangabe für Tabellen (Zeitzone steht in der Spaltenüberschrift). */
+export function shortDT(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "—" : SHORT_DT.format(d);
 }
 
 export function timeOnly(iso: string | Date): string {

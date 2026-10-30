@@ -99,6 +99,7 @@ export interface OrderRow {
   status: string;
   source: string;
   created_at: string | null;
+  filled_at: string | null;
   updated_at: string | null;
   cancelable: boolean;
   message: string | null;
@@ -196,9 +197,13 @@ export interface BarDto {
   v: number;
 }
 
+export type Timeframe = "1Min" | "5Min" | "15Min" | "1Hour" | "1Day";
+
 export interface BarsResponse {
   mode: Mode;
   symbol: string;
+  timeframe: Timeframe;
+  asset_class: "crypto" | "us_equity";
   source: string;
   feed: string;
   fetched_at: string | null;
@@ -295,4 +300,93 @@ export interface ConnectionTest {
   cash?: number;
   equity?: number;
   error?: BrokerErrorInfo;
+}
+
+export interface SymbolSuggestion {
+  symbol: string;
+  name: string;
+  asset_class: "crypto" | "us_equity";
+  group: string;
+}
+
+export interface SymbolsResponse {
+  mode: Mode;
+  query: string;
+  items: SymbolSuggestion[];
+  note: string | null;
+}
+
+export interface BacktestRequest {
+  symbol: string;
+  strategy: "scalp" | "sma";
+  days: number;
+  short_window: number;
+  long_window: number;
+  order_value: number;
+  stop_loss_pct: number;
+  take_profit_pct: number;
+  max_hold_min: number;
+  fee_pct: number;
+  spread_pct: number;
+  apply_risk_limits: boolean;
+}
+
+export interface BacktestMetrics {
+  trades: number;
+  wins: number;
+  losses: number;
+  win_rate_pct: number | null;
+  gross_pnl: number;
+  fees: number;
+  net_pnl: number;
+  avg_win: number | null;
+  avg_loss: number | null;
+  profit_factor: number | null;
+  expectancy: number | null;
+  max_drawdown: number;
+  avg_hold_min: number | null;
+  exposure_pct: number | null;
+  exit_reasons: Record<string, number>;
+  blocked_entries: Record<string, number>;
+  buy_hold_pct: number | null;
+  net_pct_of_order_value: number;
+}
+
+export interface BacktestTrade {
+  entry_time: string;
+  entry_price: number;
+  qty: number;
+  exit_time: string;
+  exit_price: number;
+  reason: string;
+  hold_min: number;
+  gross: number;
+  fees: number;
+  net: number;
+}
+
+export interface BacktestResult {
+  id: number;
+  mode: Mode;
+  request: BacktestRequest;
+  created_at: string;
+  period: { start: string; end: string };
+  source: string;
+  assumptions: string[];
+  metrics: BacktestMetrics;
+  trades: BacktestTrade[];
+  equity: { t: string; equity: number }[];
+  bars: BarDto[];
+  display_timeframe_min: number;
+  bar_count: number;
+  warning?: string;
+}
+
+export interface BacktestRun {
+  id: number;
+  created_at: string;
+  symbol: string;
+  strategy: "scalp" | "sma";
+  request: BacktestRequest;
+  metrics: BacktestMetrics;
 }

@@ -5,9 +5,10 @@ Privater Trading-Bot mit Weboberfläche für das **Alpaca-Paper-Konto** (Spielge
 * **Nur Paper Trading.** Handelsanfragen gehen ausschliesslich an `https://paper-api.alpaca.markets`, Marktdaten ausschliesslich an `https://data.alpaca.markets`. Einen Echtgeldmodus oder eine frei einstellbare Broker-URL gibt es nicht. Das Backend prüft die Zieladressen und folgt keinen Redirects.
 * **Zwei ausdrücklich gewählte Betriebsarten:** `DEMO` (lokale, reproduzierbare Beispieldaten, simulierte Orders, kein Alpaca-Zugriff) und `PAPER` (Ihr echtes Alpaca-Paper-Konto). Die Anwendung startet immer in `DEMO`, mit pausiertem Bot und gesperrter Paper-Orderfreigabe.
 * **Keine Zugangsdaten im Frontend.** Nur das Backend authentifiziert sich bei Alpaca.
+* **Backtest** auf historischen 1-Minuten-Kerzen mit Kennzahlen, Equity-Kurve und gespeicherten Läufen zum Vergleichen (Stufe 2).
 * **Zwei Teststrategien:** Scalping für Krypto (z. B. `BTC/USD`, Standard) und eine Minutenstrategie für US-Aktien/ETFs. Beide dienen **nur zum Prüfen der Automatik**. Sie sind weder validiert noch auf Gewinn ausgelegt und keine Anlageempfehlung.
 
-![Übersicht im DEMO-Modus](docs/screenshots/01-demo-uebersicht.png)
+![Übersicht im DEMO-Modus](docs/screenshots/01-uebersicht.png)
 
 ---
 
@@ -17,6 +18,8 @@ Privater Trading-Bot mit Weboberfläche für das **Alpaca-Paper-Konto** (Spielge
 2. [Entwicklung und Tests in Claude Code im Web](#entwicklung-und-tests-in-claude-code-im-web)
 3. [Cloud-Zugangsdaten: Network Secret einrichten](#cloud-zugangsdaten-network-secret-einrichten)
 4. [Bedienung: DEMO → PAPER → manuelle Order → Automatik](#bedienung)
+   * [Oberfläche und Chart](#oberfläche-und-chart)
+   * [Backtest](#backtest)
 5. [Betrieb auf dem Windows-PC](#betrieb-auf-dem-windows-pc)
 6. [Betrieb auf einem Linux-Server (mit/ohne Docker)](#betrieb-auf-einem-linux-server)
 7. [Erreichbarkeit der Oberfläche](#erreichbarkeit-der-oberfläche)
@@ -29,7 +32,8 @@ Privater Trading-Bot mit Weboberfläche für das **Alpaca-Paper-Konto** (Spielge
 ## Architektur
 
 ```
-frontend/  React 19 + TypeScript + Vite   →  dunkle deutsche UI, ruft nur /api auf (gleiche Origin)
+frontend/  React 19 + TypeScript + Vite   →  helle deutsche UI (Weiss/Gold/Anthrazit), Charts mit
+           TradingView Lightweight Charts™ (Apache-2.0), ruft nur /api auf (gleiche Origin)
 backend/   Python 3.11+ · FastAPI · Pydantic · httpx · SQLite
   app/broker/alpaca.py   gemeinsamer REST-Adapter (Auth-Modus proxy | env, feste Hosts, Timeouts, Backoff)
   app/broker/demo.py     simulierter Broker für DEMO (gleiche Schnittstelle)
@@ -38,6 +42,9 @@ backend/   Python 3.11+ · FastAPI · Pydantic · httpx · SQLite
   app/risk.py            EINE serverseitige Risikoprüfung für alle Orderwege
   app/strategy.py        SMA-Kreuzung auf abgeschlossenen Minutenkerzen
   app/bot.py             genau eine Bot-Instanz, Start/Pause
+  app/scalper.py         Scalping-Engine (Krypto): Mikrokerzen, Stop-Loss/Take-Profit/Haltedauer
+  app/backtest.py        Backtest auf historischen Minutenkerzen (reine Simulation, keine Orders)
+  app/symbols.py         Symbolvorschläge (Bot, Bestände, zuletzt gehandelt, beliebt, Suche)
   app/connection_check.py  separat ausführbarer Verbindungstest
 ```
 
@@ -119,7 +126,7 @@ Sicherheitsregel: Network Secrets für Alpaca nie als normale *Environment varia
 ## Bedienung
 
 ### 1. Start im DEMO-Modus
-Nach dem Start (siehe unten) `http://127.0.0.1:8000` öffnen. Oben steht dauerhaft ein gelbes **DEMO-MODUS**-Band. Konto, Kurse und Orders sind dort simuliert und reproduzierbar (10’000 USD Startkapital, Markt immer „offen (simuliert)“). Unter *Einstellungen → DEMO zurücksetzen* lässt sich das Demokonto neu aufsetzen.
+Nach dem Start (siehe unten) `http://127.0.0.1:8000` öffnen. Oben rechts steht dauerhaft der Modus (**DEMO · simuliert** bzw. **PAPER · Spielgeld**), im DEMO-Modus zusätzlich ein goldener Hinweisstreifen. Konto, Kurse und Orders sind dort simuliert und reproduzierbar (10’000 USD Startkapital, Markt immer „offen (simuliert)“). Unter *Einstellungen → DEMO zurücksetzen* lässt sich das Demokonto neu aufsetzen.
 
 ### 2. Verbindung zum PAPER-Konto
 1. *Diagnose → Verbindung testen*: Nur bei „Verbindung erfolgreich“ besteht wirklich eine Verbindung.
@@ -130,7 +137,7 @@ Nach dem Start (siehe unten) `http://127.0.0.1:8000` öffnen. Oben steht dauerha
 2. *Handel*: Symbol, Kauf/Verkauf, Betrag oder Stückzahl, Gültigkeit → **Prüfen & Zusammenfassung**. Die Zusammenfassung zeigt Kursschätzung, Wert und alle Prüfungen (✓/✗).
 3. Bestätigungshäkchen setzen → **Paper-Order senden**. „Angenommen“ heisst noch nicht „ausgeführt“: Die Auftragstabelle zeigt Status und **tatsächlich ausgeführte Menge**.
 
-![Order-Zusammenfassung](docs/screenshots/02-demo-order-zusammenfassung.png)
+![Bestätigung einer Order mit Modus, Symbol und Betrag](docs/screenshots/02-order-bestaetigung.png)
 
 ### 4. Automatik ausdrücklich starten
 *Bot*: Strategie wählen und Parameter prüfen → **Start**.
@@ -140,9 +147,31 @@ Nach dem Start (siehe unten) `http://127.0.0.1:8000` öffnen. Oben steht dauerha
 
 **Pause** stoppt alle *neuen automatischen* Aufträge – beim Scalping also auch die automatischen Ausstiege. Offene Positionen bleiben bestehen, bereits gesendete Broker-Orders bleiben aktiv. **Stornieren**, **Position schliessen…** und **Not-Aus** sind separate, ausdrücklich ausgelöste Aktionen.
 
-**Not-Aus** (roter Knopf oben rechts): Bot sofort pausieren, alle offenen Orders stornieren und alle Positionen per Market-Order schliessen. Im PAPER-Modus werden Positionen nur bei aktiver Paper-Orderfreigabe geschlossen; sonst werden nur die Orders storniert und das Ergebnis angezeigt.
+**Not-Aus** (roter Knopf in der Kopfzeile): Bot sofort pausieren, alle offenen Orders stornieren und alle Positionen per Market-Order schliessen. Im PAPER-Modus werden Positionen nur bei aktiver Paper-Orderfreigabe geschlossen; sonst werden nur die Orders storniert und das Ergebnis angezeigt.
 
 ---
+
+### Oberfläche und Chart
+
+* **Aufbau:** links die Navigation (auf dem Handy über ☰ als ausklappbares Menü), oben Seitentitel, gewähltes Symbol, Modus-, Verbindungs- und Bot-Status sowie **Not-Aus**. Die Übersicht zeigt vier Kennzahlen (Kontowert, verfügbares Guthaben, Tagesergebnis, offene Positionen), den Chart mit Schnellorder und Bot-Steuerung daneben und darunter die Tabs *Positionen*, *Offene Orders*, *Orderverlauf* und *Bot-Trades*.
+* **Symbol wählen:** Klick auf das Symbol (z. B. `BTC/USD`) öffnet Vorschläge, gruppiert nach *Bot*, *Im Depot*, *Zuletzt gehandelt*, *Beliebt* und – beim Tippen – *Suche* in allen handelbaren Instrumenten des Brokers (US-Aktien/ETFs und Krypto gegen USD). Unter der Chart-Toolbar stehen dieselben Vorschläge als Schnellwahl. Das gewählte Symbol gilt für Chart und Order und bleibt im Browser gespeichert.
+* **Chart:** Intervalle 1m, 5m, 15m, 1h, 1T; Kerzen oder Linie; Volumen und gleitende Durchschnitte ein-/ausblendbar (bei der SMA-Strategie die Bot-Durchschnitte, sonst SMA 20/50). Zoomen mit Mausrad bzw. zwei Fingern, Verschieben durch Ziehen, ⛶ setzt die Ansicht zurück. Das Fadenkreuz zeigt Zeit, Kurs sowie Eröffnung/Hoch/Tief/Schluss (E/H/T/S). Ausgeführte Käufe (K, grün) und Verkäufe (V, rot) erscheinen als Marker; beim Überfahren erklärt die Legende Menge, Preis und Quelle.
+* **Farben:** Gold markiert Navigation, Auswahl und Hauptaktionen; Grün/Rot ausschliesslich Kursrichtung, Kaufen/Verkaufen und Gewinn/Verlust (immer zusätzlich mit Vorzeichen). Alle Zeiten werden in Ihrer lokalen Zeitzone angezeigt (in Tabellen steht sie in der Spaltenüberschrift).
+
+### Backtest
+
+Seite *Backtest*: Symbol und Strategie wählen, Zeitraum (1, 3, 7 oder 14 Tage) und Parameter prüfen – „Aus Bot übernehmen“ setzt die aktuellen Bot-Parameter ein – und **Backtest starten**. Es werden **keine Orders** gesendet, nur Marktdaten gelesen (DEMO: synthetische Daten).
+
+Ergebnis: Netto-Ergebnis nach Kosten, Trefferquote, Profit-Faktor, maximaler Drawdown, Vergleich mit Kaufen-und-Halten, Chart mit allen Ein- und Ausstiegen, Equity-Kurve, Ausstiegsgründe, durch Risikogrenzen gesperrte Einstiege und eine Trade-Liste. Die letzten 30 Läufe je Modus bleiben gespeichert und lassen sich unter *Gespeicherte Läufe* wieder öffnen und vergleichen.
+
+Annahmen (auch auf der Seite angezeigt):
+* Historisch liefert Alpaca 1-Minuten-Kerzen; der Live-Scalper nutzt 10-Sekunden-Mikrokerzen. „Aus Bot übernehmen“ rechnet die Durchschnittslängen in Minuten um (z. B. 6/18 Mikrokerzen à 10 s → 1/3 Minuten).
+* Signal beim Kerzenschluss, Ausführung zum Eröffnungskurs der nächsten Kerze; Kauf zum Kurs + halber angenommener Spread, Verkauf zum Kurs − halber Spread; Gebühr je Ausführung.
+* Berühren Stop-Loss und Ziel dieselbe Kerze, zählt der Stop-Loss (pessimistisch). Aktien nur zur regulären Handelszeit, Durchschnitte je Sitzung neu.
+* Optional werden die Risikogrenzen des Modus nachgebildet (Einstiege pro Stunde/Tag, Verlustserie, Tagesverlust, max. Orderwert).
+* Vergangene Ergebnisse sind keine Vorhersage. Der Backtest zeigt vor allem, wie stark Kosten und Spread kurze Trades belasten.
+
+![Backtest im DEMO-Modus](docs/screenshots/03-backtest.png)
 
 ## Betrieb auf dem Windows-PC
 
@@ -271,7 +300,7 @@ Standardwerte (technische Paper-Testwerte, von Ihnen bestätigt): Einsatz 50 USD
 
 **„Echtzeit“ in dieser Version:** Der Bot fragt den Kurs alle 2 Sekunden ab, statt einen WebSocket-Datenstrom zu nutzen. Ein Datenstrom liefe über einen weiteren Host (`stream.data.alpaca.markets`) mit eigener Anmeldung per Nachricht – das widerspräche der Vorgabe, Marktdaten nur über `data.alpaca.markets` zu holen, und ist im Proxy-Modus von Claude Code im Web so nicht prüfbar. Für die eingestellten Schwellen (0,3–0,6 %, Minuten) reicht der 2-Sekunden-Takt; für echten Hochfrequenzhandel taugt die Anwendung nicht.
 
-![Scalping im DEMO-Modus: Live-Kurs, offene Position mit Stop-Loss/Take-Profit, Kostenrechnung](docs/screenshots/07-demo-scalping-live.png)
+![Bot-Seite: Strategie, Parameter und Kostenrechnung](docs/screenshots/04-bot.png)
 
 ### Minutenstrategie (US-Aktien/ETFs)
 SMA kurz (10) und SMA lang (30) auf **vollständig abgeschlossenen** Minutenkerzen **der laufenden Handelssitzung**. Den Sitzungsbeginn liefert der Alpaca-Handelskalender (`/v2/calendar`, inkl. Feiertagen und verkürzten Tagen). Kerzen vom Vortag und vor 9:30 Uhr New York fliessen nicht ein, damit eine Kurslücke über Nacht kein Signal auslöst. Deshalb wartet der Bot nach Eröffnung, bis genug Kerzen da sind (bei 30/10 rund 31 Minuten, also bis ca. 10:01 Uhr New York); der Entscheidungsverlauf zeigt das als „Zu wenige Kerzen der laufenden Sitzung“. Im Chart beginnen die Durchschnitte ebenfalls erst am Sitzungsbeginn. DEMO simuliert einen durchgehenden Markt ohne Sitzungsfilter. Ein Signal entsteht nur beim tatsächlichen Kreuzen. Gekauft wird nur ohne Position und ohne offene Kauforder (bruchstückfähig: Betragsorder in Höhe des Zielwerts, sonst ganze Stück). Verkauft wird nur der verfügbare Bestand. Jede Kerze wird höchstens einmal verarbeitet: Der Zeitstempel wird gespeichert, bevor eine Order gesendet wird, und ist Teil des Idempotenzschlüssels. Jede Entscheidung erscheint mit Begründung im *Entscheidungsverlauf*.
@@ -314,8 +343,9 @@ SMA kurz (10) und SMA lang (30) auf **vollständig abgeschlossenen** Minutenkerz
 
 Ausgeführt in der Claude-Code-Cloud am 30.10.2026:
 
-* Backend: `uv run pytest -q` → **118 Tests bestanden** (Stand nach Krypto/Scalping) (Mock-Tests, kein Netzwerk). Abgedeckt: Verbindungsantworten und Auth-Fehler, strikte Paper-Zieladressen/Redirects, Demo/Paper-Trennung, Risiko- und Bestandsgrenzen, Tagesverlust mit Tageswechsel, Mehrfachstarts (auch parallel), Order-Duplikate nach Timeouts, Neustartabgleich mit Teilausführung, wiederholte Strategiesignale, CSRF/Origin/Host-Schutz.
-* Frontend: `npm run typecheck` und `npm run build` fehlerfrei.
+* Backend: `uv run pytest -q` → **132 Tests bestanden** (Stand nach Backtest/Stufe 2) (Mock-Tests, kein Netzwerk). Abgedeckt: Verbindungsantworten und Auth-Fehler, strikte Paper-Zieladressen/Redirects, Demo/Paper-Trennung, Risiko- und Bestandsgrenzen, Tagesverlust mit Tageswechsel, Mehrfachstarts (auch parallel), Order-Duplikate nach Timeouts, Neustartabgleich mit Teilausführung, wiederholte Strategiesignale, CSRF/Origin/Host-Schutz.
+* Frontend: `npm run typecheck`, `npm run build` und `npm audit --omit=dev` (0 Schwachstellen) fehlerfrei.
+* Neues Design (Stufe 2) im Headless-Chromium geprüft, Desktop 1440 px und Smartphone 390 px: Übersicht mit Kennzahlen, Chart (Fadenkreuz-Legende, Mausrad-Zoom, Intervallwechsel), Symbolauswahl mit Vorschlägen und Suche, Eingabevalidierung, Bestätigungsdialog und Demo-Kauf, Orderverlauf, Handel, Bot, Backtest-Lauf, Einstellungen, Moduswechsel nach PAPER mit gestaltetem Fehlerzustand, Diagnose, mobiles Menü. Keine Konsolenfehler, keine horizontale Seiten-Scrollleiste (390/390 px). Kontraste der Farbpalette berechnet (WCAG): Text mindestens 4,5:1; Gold #B8924A nur grafisch bzw. auf Anthrazit, Eingabefelder mit zusätzlichem Rahmen-Token #878F99 (3,3:1).
 * Laufende Anwendung im Headless-Chromium geprüft: DEMO-Übersicht, Chart, manuelle Betrags- und Stückzahl-Order mit Zusammenfassung und Pflichtbestätigung, Teilausführung → ausgeführt, Bot Start/Pause, Wechsel nach PAPER mit Fehleranzeige ohne Demodaten, gesperrte Paper-Orders, Diagnose und Verbindungstest, Mobilansicht. Keine Konsolenfehler.
 * Zweite Backend-Instanz und Bindung an `0.0.0.0` werden wie vorgesehen abgelehnt.
 * Docker: `docker compose config` gültig. Der Image-Build konnte in der Cloud **nicht** geprüft werden: Docker Hub lehnte das Laden von `python:3.13-slim` mit HTTP 429 (Rate Limit) ab.
@@ -323,3 +353,7 @@ Ausgeführt in der Claude-Code-Cloud am 30.10.2026:
 * Nicht ausgeführt: echte Paper-Orders (bewusst – diese lösen Sie selbst über die Oberfläche aus) und der Bot gegen das Paper-Konto.
 * Sitzungsfilter: mit Mock-Tests geprüft (u. a. Umrechnung Sommer-/Winterzeit, Feiertag, Kurslücke). Gegen die echte Kalender-API noch nicht geprüft, weil das Cloud-Secret nach dem Erneuern der Schlüssel ungültig war (HTTP 401). Ein Test auf dem PC zeigt es: Im Entscheidungsverlauf erscheinen nach Eröffnung zunächst Einträge „Zu wenige Kerzen der laufenden Sitzung“.
 * Krypto/Scalping (Stufe 1): mit Mock-Tests geprüft – Krypto-Symbole und -Pfade, Spread-Filter, Einstiege pro Stunde, Verlustserien-Pause, kompletter Trade mit Take-Profit inkl. Gebühren, Stop-Loss, Haltedauer, kein Ausstieg bei Pause, veraltete Kurse, Not-Aus (DEMO und PAPER ohne Freigabe). Im DEMO-Modus mit simulierter Uhr über 45 Minuten (8 Trades) und im Browser in Echtzeit geprüft. **Gegen die echte Alpaca-Krypto-API noch nicht geprüft**, weil das Cloud-Secret noch die alten Schlüssel enthielt (HTTP 401).
+
+| PAPER-Fehlerzustand (ohne Demodaten) | Smartphone |
+| --- | --- |
+| ![PAPER-Fehlerzustand](docs/screenshots/05-paper-fehlerzustand.png) | ![Mobilansicht](docs/screenshots/06-mobil.png) |
