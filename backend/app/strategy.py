@@ -99,3 +99,32 @@ def trend_ok(closes: list[float], minutes: int, price: float) -> tuple[bool, str
     if now_avg < before:
         return False, f"{minutes}-Min.-Durchschnitt fällt ({_px(before)} → {_px(now_avg)})"
     return True, f"Trend aufwärts (Kurs über steigendem {minutes}-Min.-Durchschnitt {_px(now_avg)})"
+
+
+ATR_STOP_RANGE = (0.05, 10.0)  # Stop-Loss in %: nie enger/weiter als das
+ATR_TARGET_RANGE = (0.05, 20.0)
+ATR_TARGET_COST_MARGIN = 0.1  # Ziel mindestens Kosten je Trade + 0,1 %
+
+
+def atr_pct(bars: list[Bar], periods: int, bar_seconds: int) -> float | None:
+    """Average True Range der letzten ``periods`` Kerzen in % des letzten Schlusskurses.
+
+    ``bars``: abgeschlossene Kerzen, älteste zuerst. Nach einer Lücke (Börsenschluss,
+    Wochenende) zählt nur die Spanne der Kerze, nicht der Sprung zum vorigen Schluss.
+    """
+    if len(bars) < periods + 1 or bars[-1].c <= 0:
+        return None
+    ranges = []
+    for prev, b in zip(bars, bars[1:]):
+        gap = (b.t - prev.t).total_seconds() > 2 * bar_seconds
+        tr = b.h - b.l if gap else max(b.h - b.l, abs(b.h - prev.c), abs(b.l - prev.c))
+        ranges.append(tr)
+    last = ranges[-periods:]
+    return sum(last) / periods / bars[-1].c * 100
+
+
+def atr_exit_pcts(atr: float, stop_mult: float, target_mult: float, fee_pct: float) -> tuple[float, float]:
+    """Stop-Loss/Take-Profit in % aus der ATR – begrenzt; das Ziel liegt immer über den Kosten."""
+    sl = min(max(atr * stop_mult, ATR_STOP_RANGE[0]), ATR_STOP_RANGE[1])
+    tp = min(max(atr * target_mult, ATR_TARGET_RANGE[0], 2 * fee_pct + ATR_TARGET_COST_MARGIN), ATR_TARGET_RANGE[1])
+    return round(sl, 4), round(tp, 4)

@@ -35,6 +35,7 @@ export interface ScalperSymbolView {
     deadline: string;
     entry_time: string;
     broker_stop?: boolean;
+    atr_pct?: number | null;
     bid?: number;
     pnl_pct?: number;
   };
@@ -176,6 +177,14 @@ export interface BotParams {
   crypto_outside_session_only: boolean;
   trend_filter: boolean;
   trend_minutes: number;
+  atr_exits: boolean;
+  atr_timeframe: "5Min" | "15Min" | "1Hour";
+  atr_periods: number;
+  atr_stop_mult: number;
+  atr_target_mult: number;
+  symbol_pause: boolean;
+  symbol_pause_trades: number;
+  symbol_pause_hours: number;
   short_window: number;
   long_window: number;
   order_value: number;
@@ -371,6 +380,11 @@ export interface BacktestRequest {
   apply_risk_limits: boolean;
   trend_filter: boolean;
   trend_minutes: number;
+  atr_exits: boolean;
+  atr_timeframe: "5Min" | "15Min" | "1Hour";
+  atr_periods: number;
+  atr_stop_mult: number;
+  atr_target_mult: number;
 }
 
 export interface BacktestMetrics {
@@ -392,6 +406,9 @@ export interface BacktestMetrics {
   blocked_entries: Record<string, number>;
   buy_hold_pct: number | null;
   net_pct_of_order_value: number;
+  atr_trades?: number;
+  avg_stop_pct?: number | null;
+  avg_target_pct?: number | null;
 }
 
 export interface BacktestTrade {
@@ -461,4 +478,31 @@ export interface ResumeInfo {
   last_run: { mode: Mode | null; bot: boolean; updated_at: string | null };
   status: string | null;
   pending: boolean;
+}
+
+export interface SymbolStat {
+  symbol: string;
+  active: boolean;
+  trades: number;
+  wins: number;
+  losses: number;
+  win_rate_pct: number | null;
+  net: number;
+  avg_net: number | null;
+  profit_factor: number | null;
+  avg_hold_min: number | null;
+  best: number | null;
+  worst: number | null;
+  last_exit: string | null;
+  exit_reasons: Record<string, number>;
+  paused_until: string | null;
+  pause_reason: string | null;
+}
+
+export interface BotStats {
+  mode: Mode;
+  days: number | null;
+  symbols: SymbolStat[];
+  pause_rule: { enabled: boolean; trades: number; hours: number };
+  note: string;
 }

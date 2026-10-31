@@ -171,6 +171,7 @@ Annahmen (auch auf der Seite angezeigt):
 * Signal beim Kerzenschluss, Ausführung zum Eröffnungskurs der nächsten Kerze; Kauf zum Kurs + halber angenommener Spread, Verkauf zum Kurs − halber Spread; Gebühr je Ausführung.
 * Berühren Stop-Loss und Ziel dieselbe Kerze, zählt der Stop-Loss (pessimistisch). Aktien nur zur regulären Handelszeit, Durchschnitte je Sitzung neu. Beim ETF-Scalping keine Einstiege in den letzten 15 Minuten, Glattstellen 5 Minuten vor Schluss bzw. mit der letzten Kerze des Tages.
 * Trendfilter wie im Bot, berechnet auf den 1-Minuten-Kerzen des Backtests. Ausgelassene Signale erscheinen unter „gesperrte Einstiege“ als „Trendfilter“.
+* ATR-Ausstiege wie im Bot. Die 5-, 15- bzw. 60-Minuten-Kerzen werden aus den 1-Minuten-Kerzen zusammengesetzt, und zwar nur aus den bis zum Einstieg abgeschlossenen (kein Blick in die Zukunft). Bis genügend Kerzen vorliegen, gelten die festen Werte. Die Kennzahlen zeigen den Ø Stop und das Ø Ziel sowie wie viele Trades nach ATR liefen.
 * Optional werden die Risikogrenzen des Modus nachgebildet (Einstiege pro Stunde/Tag, Verlustserie, Tagesverlust, max. Orderwert).
 * Vergangene Ergebnisse sind keine Vorhersage. Der Backtest zeigt vor allem, wie stark Kosten und Spread kurze Trades belasten.
 
@@ -316,6 +317,18 @@ Standardwerte (technische Paper-Testwerte, von Ihnen bestätigt): `BTC/USD`, `ET
 
 **Trendfilter (Standard: an, 30 Minuten):** Nach einem Kaufsignal kauft der Bot nur, wenn der aktuelle Kurs über dem Durchschnitt der letzten 30 abgeschlossenen 1-Minuten-Kerzen liegt **und** dieser Durchschnitt höher ist als vor 5 Minuten. Fehlen Kerzen, gibt es keinen Einstieg. Ausgelassene Signale stehen mit Begründung im *Entscheidungsverlauf* („Trendfilter: …“). Bei ETFs/Aktien zählen nur Kerzen des laufenden Handelstags. Dadurch gibt es in den ersten gut 35 Minuten nach Eröffnung keine Einstiege, und die unruhige Eröffnungsphase fällt weg.
 
+**Ausstiege nach Schwankung (ATR, Standard: an):** Feste Prozentwerte passen nicht zu jedem Symbol. SPY bewegt sich in einer Viertelstunde typischerweise um Zehntelprozente, Krypto um ein Vielfaches davon. Mit ATR-Ausstiegen misst der Bot beim Kaufsignal die **ATR**: die durchschnittliche Spanne der letzten 14 Kerzen à 15 Minuten, in % des Kurses. Daraus setzt er die Ausstiege:
+* **Stop-Loss = 1,5 × ATR**, **Take-Profit = 3 × ATR**. Kerzenlänge, Anzahl und Faktoren lassen sich einstellen.
+* Grenzen: Stop 0,05–10 %, Ziel 0,05–20 %. Das Ziel liegt **immer über den Gebühren** (mindestens 2 × Gebühr + 0,1 %).
+* Nach Lücken (Börsenschluss, Wochenende) zählt nur die Spanne der Kerze, nicht der Kurssprung.
+* Ist die ATR nicht bestimmbar (zu wenige Kerzen, Datenfehler), gelten die festen Werte der Anlageklasse. Der Entscheidungsverlauf vermerkt das.
+* Die ATR des Einstiegs wird am Trade gespeichert. Die Live-Anzeige zeigt, ob die Abstände aus der ATR oder aus festen Werten stammen.
+
+**Statistik je Symbol und Auto-Pause:** Auf der Bot-Seite zeigt *Statistik je Symbol* für 7 Tage, 30 Tage oder den gesamten Zeitraum je Symbol: Trades, Gewinner und Verlierer, Trefferquote, Netto, Ø je Trade, Profit-Faktor (Summe der Gewinne ÷ Summe der Verluste), Ø Haltedauer und Ausstiegsgründe.
+* **Auto-Pause (Standard an):** Sind die letzten 10 abgeschlossenen Trades eines Symbols zusammen im Minus, kauft der Bot dieses Symbol 24 Stunden lang nicht mehr. Laufende Positionen werden normal beendet, andere Symbole handeln weiter.
+* Dazu kommt eine Push-Nachricht. Mit **Fortsetzen…** heben Sie die Pause vorzeitig auf.
+* Nach jeder Pause beginnt ein neues Bewertungsfenster, alte Verluste lösen also nicht sofort wieder eine Pause aus. Anzahl Trades und Dauer sind einstellbar.
+
 **US-ETFs/Aktien beim Scalping:**
 * **Warum:** Alpaca handelt US-Aktien und ETFs **kommissionsfrei**. Ein Trade kostet nur den Spread (bei SPY/QQQ meist um 0,01–0,02 %) statt rund 0,5 % wie bei Krypto. Die Hürde für ein positives Ergebnis ist damit viel niedriger.
 * **Handelszeit:** nur in der regulären US-Handelszeit, 9:30–16:00 New York, also 15:30–22:00 Uhr mitteleuropäischer Zeit (in den Umstellungswochen eine Stunde abweichend). Ausserhalb fragt der Bot keine Aktienkurse ab und sendet keine Orders.
@@ -388,7 +401,7 @@ SMA kurz (10) und SMA lang (30) auf **vollständig abgeschlossenen** Minutenkerz
 
 Ausgeführt in der Claude-Code-Cloud am 30.10.2026:
 
-* Backend: `uv run pytest -q` → **190 Tests bestanden** (Stand mit ETF-Scalping und Trendfilter) (Mock-Tests, kein Netzwerk). Abgedeckt: Verbindungsantworten und Auth-Fehler, strikte Paper-Zieladressen/Redirects, Demo/Paper-Trennung, Risiko- und Bestandsgrenzen, Tagesverlust mit Tageswechsel, Mehrfachstarts (auch parallel), Order-Duplikate nach Timeouts, Neustartabgleich mit Teilausführung, wiederholte Strategiesignale, CSRF/Origin/Host-Schutz.
+* Backend: `uv run pytest -q` → **199 Tests bestanden** (Stand mit ATR-Ausstiegen und Statistik je Symbol) (Mock-Tests, kein Netzwerk). Abgedeckt: Verbindungsantworten und Auth-Fehler, strikte Paper-Zieladressen/Redirects, Demo/Paper-Trennung, Risiko- und Bestandsgrenzen, Tagesverlust mit Tageswechsel, Mehrfachstarts (auch parallel), Order-Duplikate nach Timeouts, Neustartabgleich mit Teilausführung, wiederholte Strategiesignale, CSRF/Origin/Host-Schutz.
 * Frontend: `npm run typecheck`, `npm run build` und `npm audit --omit=dev` (0 Schwachstellen) fehlerfrei.
 * Neues Design (Stufe 2) im Headless-Chromium geprüft, Desktop 1440 px und Smartphone 390 px: Übersicht mit Kennzahlen, Chart (Fadenkreuz-Legende, Mausrad-Zoom, Intervallwechsel), Symbolauswahl mit Vorschlägen und Suche, Eingabevalidierung, Bestätigungsdialog und Demo-Kauf, Orderverlauf, Handel, Bot, Backtest-Lauf, Einstellungen, Moduswechsel nach PAPER mit gestaltetem Fehlerzustand, Diagnose, mobiles Menü. Keine Konsolenfehler, keine horizontale Seiten-Scrollleiste (390/390 px). Kontraste der Farbpalette berechnet (WCAG): Text mindestens 4,5:1; Gold #B8924A nur grafisch bzw. auf Anthrazit, Eingabefelder mit zusätzlichem Rahmen-Token #878F99 (3,3:1).
 * Laufende Anwendung im Headless-Chromium geprüft: DEMO-Übersicht, Chart, manuelle Betrags- und Stückzahl-Order mit Zusammenfassung und Pflichtbestätigung, Teilausführung → ausgeführt, Bot Start/Pause, Wechsel nach PAPER mit Fehleranzeige ohne Demodaten, gesperrte Paper-Orders, Diagnose und Verbindungstest, Mobilansicht. Keine Konsolenfehler.
@@ -419,6 +432,11 @@ Ausgeführt in der Claude-Code-Cloud am 30.10.2026:
   * *Trendfilter:* sperrt bei fallendem Trend, erlaubt bei steigendem, sperrt ohne genügend Kerzen. Im Backtest dasselbe, ebenso das Glattstellen und die Einstiegssperre vor Börsenschluss.
   * Im Browser bei 1440 und 390 px ohne Konsolenfehler geprüft.
   * **Gegen die echte Alpaca-API noch nicht geprüft**, insbesondere die gebündelte ETF-Kursabfrage im IEX-Feed. Das zeigt der erste PAPER-Tag mit ETFs.
+* **ATR-Ausstiege und Statistik je Symbol (31.10.2026), nur Mocks und DEMO:**
+  * *ATR:* Berechnung (True Range, Lücken, zu wenige Kerzen), Grenzen und Kostenuntergrenze. Ausstiegsmarken des Bots aus der ATR, Rückfall auf feste Werte. Im Backtest ATR erst nach genügend Kerzen.
+  * *Statistik:* Kennzahlen je Symbol mit Zeitraumfilter.
+  * *Auto-Pause:* erst nach N Trades und nur bei Netto-Minus; sperrt nur das betroffene Symbol, ist abschaltbar; neues Fenster nach Ablauf. Fortsetzen über die API mit CSRF-Schutz.
+  * *Oberfläche:* im Browser geprüft (Ausstiegs- und Auto-Pause-Einstellungen, Statistik mit Fortsetzen, Backtest mit ATR), Desktop und 390 px ohne Konsolenfehler.
 
 | PAPER-Fehlerzustand (ohne Demodaten) | Smartphone |
 | --- | --- |

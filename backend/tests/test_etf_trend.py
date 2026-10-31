@@ -9,7 +9,7 @@ from app.core import AppContext
 from app.settings_store import BotParams, RiskLimits, set_bot_params, set_risk_limits
 from test_backtest_symbols import req, series
 
-BASE = dict(strategy="scalp", symbol="SPY", symbols=["SPY"], short_window=2, long_window=4, bar_seconds=5,
+BASE = dict(strategy="scalp", atr_exits=False, symbol="SPY", symbols=["SPY"], short_window=2, long_window=4, bar_seconds=5,
             poll_interval_s=1, order_value=20, trend_filter=False, broker_stop=True,
             stock_stop_loss_pct=1.0, stock_take_profit_pct=1.0, stock_max_hold_min=30)
 DOWN_UP = [100, 99.8, 99.6, 99.4, 99.2, 99.0, 99.9, 100.0]

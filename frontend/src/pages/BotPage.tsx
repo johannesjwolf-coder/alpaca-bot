@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, errorText } from "../api";
 import { useBotInfo } from "../components/BotCard";
 import { FeedTag } from "../components/StreamBadge";
+import { SymbolStatsCard } from "../components/SymbolStats";
 import { useSymbolSuggestions } from "../components/SymbolPicker";
 import { BotTradesTable } from "../components/tables";
 import { Card, EmptyState, Icon, Notice, Pill, Seg, Spinner, Tag, useConfirm } from "../components/ui";
@@ -72,6 +73,7 @@ function SymbolLive({ symbol, view }: { symbol: string; view: ScalperSymbolView 
         <Notice title={`Trade #${t.id}: ${num(t.qty, 8)} zu ${price(t.entry_price)}`}>
           Geldkurs {price(t.bid ?? null)} · <span className={tone(t.pnl_pct)}>{pct(t.pnl_pct ?? null, 3)}</span><br />
           Stop-Loss {price(t.stop_price)} {t.broker_stop ? "(Schutzorder beim Broker aktiv)" : "(vom Bot überwacht)"} · Take-Profit {price(t.target_price)} · Restzeit {remainingText(t.deadline)}
+          <br /><span className="muted small">{t.atr_pct ? `Abstände nach Schwankung: ATR ${num(t.atr_pct, 3)} %` : "Abstände: feste Prozentwerte"}</span>
         </Notice>
       )}
     </div>
@@ -276,6 +278,36 @@ export function BotPage({ status, onChange }: { status: Status; onChange: () => 
                 {params.trend_filter && <div className="form-grid" style={{ maxWidth: 260 }}>{field(["trend_minutes", "Trend über", "1", "Minuten"])}</div>}
               </div>
             )}
+            {scalp && (
+              <fieldset className="param-group">
+                <legend>Ausstiege</legend>
+                <Seg label="Ausstiege" value={params.atr_exits ? "atr" : "fixed"} disabled={running}
+                     onChange={(v) => setParams({ ...params, atr_exits: v === "atr" })}
+                     options={[{ id: "atr", label: "Nach Schwankung (ATR)" }, { id: "fixed", label: "Feste Prozente" }]} />
+                {params.atr_exits ? (
+                  <>
+                    <p className="field-help">
+                      Stop-Loss und Take-Profit richten sich nach der typischen Schwankung jedes Symbols (ATR = durchschnittliche
+                      Kerzenspanne). Beispiel: ATR 0,4 % → Stop −{num(0.4 * params.atr_stop_mult, 2)} %, Ziel +{num(0.4 * params.atr_target_mult, 2)} %.
+                      Das Ziel liegt immer über den Gebühren. Die festen Werte unten gelten nur, wenn die ATR nicht bestimmbar ist.
+                    </p>
+                    <div className="form-grid">
+                      <div className="field">
+                        <span>ATR-Kerzen</span>
+                        <Seg label="ATR-Kerzen" value={params.atr_timeframe} disabled={running}
+                             onChange={(v) => setParams({ ...params, atr_timeframe: v })}
+                             options={[{ id: "5Min", label: "5 Min." }, { id: "15Min", label: "15 Min." }, { id: "1Hour", label: "1 Std." }]} />
+                      </div>
+                      {field(["atr_periods", "ATR über", "1", "Kerzen"])}
+                      {field(["atr_stop_mult", "Stop-Loss", "0.1", "× ATR"])}
+                      {field(["atr_target_mult", "Take-Profit", "0.1", "× ATR"])}
+                    </div>
+                  </>
+                ) : (
+                  <p className="field-help">Stop-Loss und Take-Profit als feste Prozentwerte je Anlageklasse (unten).</p>
+                )}
+              </fieldset>
+            )}
             {scalp && hasStocks && (
               <fieldset className="param-group">
                 <legend>US-ETFs/Aktien</legend>
@@ -308,8 +340,28 @@ export function BotPage({ status, onChange }: { status: Status; onChange: () => 
               </fieldset>
             )}
             {scalp && (
+              <fieldset className="param-group">
+                <legend>Auto-Pause je Symbol</legend>
+                <label className="check">
+                  <input type="checkbox" checked={params.symbol_pause} disabled={running}
+                         onChange={(e) => setParams({ ...params, symbol_pause: e.target.checked })} />
+                  <span>
+                    Sind die letzten {params.symbol_pause_trades} Trades eines Symbols zusammen im Minus, kauft der Bot dieses Symbol
+                    {" "}{num(params.symbol_pause_hours, 0)} Std. lang nicht mehr. Andere Symbole handeln weiter; Fortsetzen jederzeit unter „Statistik je Symbol“.
+                  </span>
+                </label>
+                {params.symbol_pause && (
+                  <div className="form-grid">
+                    {field(["symbol_pause_trades", "Bewertet werden", "1", "Trades"])}
+                    {field(["symbol_pause_hours", "Pause", "1", "Std."])}
+                  </div>
+                )}
+              </fieldset>
+            )}
+            {scalp && (
               <Notice tone={(hasCrypto && params.take_profit_pct <= 2 * params.fee_pct) || (hasStocks && params.stock_take_profit_pct <= 2 * params.stock_fee_pct) ? "warn" : ""}
                       title="Kostenrechnung je Trade (geschätzt)">
+                {params.atr_exits && <div className="muted">Mit ATR-Ausstiegen hängen die Abstände von der Schwankung ab; die Rechnung zeigt die festen Rückfallwerte.</div>}
                 {hasStocks && costLine("ETFs/Aktien", params.stock_fee_pct, params.stock_take_profit_pct, params.stock_stop_loss_pct)}
                 {hasCrypto && costLine("Krypto", params.fee_pct, params.take_profit_pct, params.stop_loss_pct)}
               </Notice>
@@ -324,6 +376,8 @@ export function BotPage({ status, onChange }: { status: Status; onChange: () => 
           </form>
         )}
       </Card>
+
+      <SymbolStatsCard mode={mode} />
 
       <Card title="Bot-Trades" hint="Kosten geschätzt; massgeblich ist die Abrechnung des Brokers" bodyClass={null}>
         <BotTradesTable trades={info.data?.trades ?? []} />

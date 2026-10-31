@@ -18,6 +18,9 @@ Annahmen (bewusst vorsichtig und offen dokumentiert):
   letzten Kerze des Handelstags (auch an verkürzten Tagen).
 * Trendfilter (optional): Einstieg nur, wenn der Schlusskurs über einem steigenden
   Durchschnitt der letzten N Minutenkerzen liegt – wie beim Live-Bot.
+* ATR-Ausstiege (optional): Stop-Loss/Take-Profit als Vielfaches der ATR, berechnet aus
+  den bis zum Einstieg abgeschlossenen 5/15/60-Minuten-Kerzen (aus den 1-Minuten-Kerzen
+  zusammengesetzt). Solange zu wenige Kerzen vorliegen, gelten die festen Werte.
 * Risikogrenzen des aktiven Modus (Einstiege pro Stunde/Tag, Verlustserien-Pause,
   Tagesverlust, max. Orderwert) werden auf Wunsch nachgebildet.
 Ein Backtest ist keine Vorhersage. Vergangene Ergebnisse garantieren nichts.
@@ -33,9 +36,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from .broker.base import SYMBOL_RE, Bar, is_crypto
+from .broker.base import SYMBOL_RE, TIMEFRAMES, Bar, is_crypto
 from .settings_store import FLATTEN_BEFORE_CLOSE_MIN, NO_ENTRY_BEFORE_CLOSE_MIN, RiskLimits
-from .strategy import trend_ok
+from .strategy import atr_exit_pcts, atr_pct, trend_ok
 from .timeutil import NEW_YORK, trading_day
 
 SESSION_CLOSE_MIN = 16 * 60  # 16:00 New York
@@ -65,6 +68,11 @@ class BacktestRequest(BaseModel):
     apply_risk_limits: bool = True
     trend_filter: bool = False
     trend_minutes: int = Field(30, ge=5, le=240)
+    atr_exits: bool = False
+    atr_timeframe: Literal["5Min", "15Min", "1Hour"] = "15Min"
+    atr_periods: int = Field(14, ge=3, le=50)
+    atr_stop_mult: float = Field(1.5, gt=0, le=10)
+    atr_target_mult: float = Field(3.0, gt=0, le=20)
 
     @field_validator("symbol")
     @classmethod
@@ -91,6 +99,9 @@ class _Position:
     stop: float
     target: float
     deadline: datetime
+    sl_pct: float = 0.0
+    tp_pct: float = 0.0
+    atr: float | None = None
 
 
 @dataclass
@@ -145,6 +156,19 @@ def simulate(bars: list[Bar], req: BacktestRequest, limits: RiskLimits | None, s
     equity: list[tuple[datetime, float]] = []
     exposure_bars = 0
     stock_scalp = req.strategy == "scalp" and not is_crypto(req.symbol)
+    atr_sec = TIMEFRAMES[req.atr_timeframe]
+    atr_bars: deque[Bar] = deque(maxlen=req.atr_periods + 1)
+    atr_cur: list | None = None  # [Beginn, o, h, l, c] der laufenden ATR-Kerze
+
+    def atr_add(b: Bar) -> None:
+        nonlocal atr_cur
+        start = datetime.fromtimestamp(b.t.timestamp() // atr_sec * atr_sec, tz=timezone.utc)
+        if atr_cur is None or start != atr_cur[0]:
+            if atr_cur is not None:
+                atr_bars.append(Bar(t=atr_cur[0], o=atr_cur[1], h=atr_cur[2], l=atr_cur[3], c=atr_cur[4]))
+            atr_cur = [start, b.o, b.h, b.l, b.c]
+        else:
+            atr_cur[2], atr_cur[3], atr_cur[4] = max(atr_cur[2], b.h), min(atr_cur[3], b.l), b.c
 
     def close(at: datetime, price: float, reason: str) -> None:
         nonlocal pos
@@ -167,6 +191,9 @@ def simulate(bars: list[Bar], req: BacktestRequest, limits: RiskLimits | None, s
                 "gross": round(gross, 4),
                 "fees": round(fees, 4),
                 "net": round(net, 4),
+                "stop_pct": round(pos.sl_pct, 4),
+                "target_pct": round(pos.tp_pct, 4),
+                "atr_pct": round(pos.atr, 4) if pos.atr else None,
             }
         )
         if limits is not None:
@@ -211,13 +238,20 @@ def simulate(bars: list[Bar], req: BacktestRequest, limits: RiskLimits | None, s
         pending_exit = None
         if pending_entry and pos is None:
             px = b.o * (1 + hs)
+            sl_pct, tp_pct = req.stop_loss_pct, req.take_profit_pct
+            atr = atr_pct(list(atr_bars), req.atr_periods, atr_sec) if req.atr_exits and req.strategy == "scalp" else None
+            if atr:
+                sl_pct, tp_pct = atr_exit_pcts(atr, req.atr_stop_mult, req.atr_target_mult, req.fee_pct)
             pos = _Position(
                 entry_time=b.t,
                 entry_price=px,
                 qty=order_value / px,
-                stop=px * (1 - req.stop_loss_pct / 100),
-                target=px * (1 + req.take_profit_pct / 100),
+                stop=px * (1 - sl_pct / 100),
+                target=px * (1 + tp_pct / 100),
                 deadline=b.t + timedelta(minutes=req.max_hold_min),
+                sl_pct=sl_pct,
+                tp_pct=tp_pct,
+                atr=atr,
             )
             sim.entries.append(b.t)
         pending_entry = False
@@ -253,6 +287,7 @@ def simulate(bars: list[Bar], req: BacktestRequest, limits: RiskLimits | None, s
             sim.locked_day = day
 
         # 4) Signal beim Kerzenschluss (inkrementelle Durchschnitte)
+        atr_add(b)
         closes.append(b.c)
         sum_s += b.c
         sum_l += b.c
@@ -326,6 +361,9 @@ def _report(bars: list[Bar], req: BacktestRequest, sim: _Sim, equity: list, expo
         "blocked_entries": dict(sim.blocked),
         "buy_hold_pct": round(bh_pct, 3) if bh_pct is not None else None,
         "net_pct_of_order_value": round(sum(nets) / req.order_value * 100, 2) if trades else 0.0,
+        "atr_trades": sum(1 for t in trades if t.get("atr_pct")),
+        "avg_stop_pct": round(sum(t["stop_pct"] for t in trades) / len(trades), 3) if trades else None,
+        "avg_target_pct": round(sum(t["target_pct"] for t in trades) / len(trades), 3) if trades else None,
     }
     factor = max(1, math.ceil(len(bars) / MAX_DISPLAY_BARS))
     display = _aggregate(bars, factor)
@@ -350,6 +388,7 @@ ASSUMPTIONS = [
     "Berühren Stop-Loss und Ziel dieselbe Kerze, zählt der Stop-Loss (pessimistisch).",
     "Aktien: nur reguläre Handelszeit, Durchschnitte je Sitzung neu; Scalping glattgestellt vor Börsenschluss.",
     "Trendfilter (wenn gewählt): Schlusskurs über steigendem Durchschnitt der letzten N Minutenkerzen.",
+    "ATR-Ausstiege (wenn gewählt): aus bis zum Einstieg abgeschlossenen Kerzen; vorher feste Werte.",
     "Vergangene Ergebnisse sind keine Vorhersage.",
 ]
 

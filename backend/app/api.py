@@ -468,6 +468,42 @@ async def bot_state(request: Request, limit: int = Query(50, ge=1, le=500)) -> d
     }
 
 
+@router.get("/bot/stats")
+async def bot_stats(request: Request, days: int = Query(30, ge=0, le=365)) -> dict:
+    """Kennzahlen je Symbol (0 = gesamter Zeitraum) und Regel der Auto-Pause."""
+    ctx = ctx_of(request)
+    params = get_bot_params(ctx.db, ctx.mode)
+    symbols = params.scalp_symbols if params.strategy == "scalp" else [params.symbol]
+    return {
+        "mode": ctx.mode,
+        "days": days or None,
+        "symbols": ctx.bot.scalper.symbol_stats(ctx.mode, days or None, symbols),
+        "pause_rule": {
+            "enabled": params.symbol_pause,
+            "trades": params.symbol_pause_trades,
+            "hours": params.symbol_pause_hours,
+        },
+        "note": "Netto nach geschätzten Kosten; massgeblich ist die Abrechnung des Brokers.",
+    }
+
+
+class SymbolBody(BaseModel):
+    expected_mode: Mode
+    symbol: str = Field(min_length=1, max_length=16)
+
+
+@router.post("/bot/symbols/resume")
+async def resume_symbol(body: SymbolBody, request: Request) -> dict:
+    ctx = ctx_of(request)
+    require_mode(ctx, body.expected_mode)
+    symbol = body.symbol.strip().upper()
+    if not SYMBOL_RE.match(symbol):
+        raise HTTPException(400, "Ungültiges Symbol")
+    if not ctx.bot.scalper.resume_symbol(ctx.mode, symbol):
+        raise HTTPException(409, f"{symbol} ist nicht pausiert.")
+    return {"mode": ctx.mode, "symbol": symbol, "resumed": True}
+
+
 @router.post("/emergency-stop")
 async def emergency_stop(body: ModeOnly, request: Request) -> dict:
     """Not-Aus: Bot stoppen, alle offenen Orders stornieren, alle Positionen schliessen.

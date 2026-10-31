@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -79,6 +80,16 @@ class BotParams(BaseModel):
     # Trendfilter: Einstieg nur über einem steigenden Durchschnitt der letzten Minutenkerzen
     trend_filter: bool = Field(True)
     trend_minutes: int = Field(30, ge=5, le=240)
+    # Ausstiege nach Schwankung: Stop-Loss/Take-Profit als Vielfaches der ATR (feste Werte = Rückfall)
+    atr_exits: bool = Field(True)
+    atr_timeframe: Literal["5Min", "15Min", "1Hour"] = "15Min"
+    atr_periods: int = Field(14, ge=3, le=50)
+    atr_stop_mult: float = Field(1.5, gt=0, le=10)
+    atr_target_mult: float = Field(3.0, gt=0, le=20)
+    # Auto-Pause je Symbol: sind die letzten N Trades eines Symbols zusammen im Minus, pausiert es
+    symbol_pause: bool = Field(True)
+    symbol_pause_trades: int = Field(10, ge=3, le=100)
+    symbol_pause_hours: float = Field(24.0, gt=0, le=720)
 
     @field_validator("strategy")
     @classmethod

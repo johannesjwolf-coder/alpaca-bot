@@ -190,7 +190,8 @@ class Database:
         """Neue Spalten in bestehenden Datenbanken ergänzen (idempotent)."""
         wanted = {
             "orders": [("order_type", "TEXT NOT NULL DEFAULT 'market'"), ("stop_price", "REAL"), ("limit_price", "REAL")],
-            "trades": [("stop_cid", "TEXT"), ("stop_attempts", "INTEGER NOT NULL DEFAULT 0"), ("sl_seen_at", "TEXT")],
+            "trades": [("stop_cid", "TEXT"), ("stop_attempts", "INTEGER NOT NULL DEFAULT 0"), ("sl_seen_at", "TEXT"),
+                       ("atr_pct", "REAL")],
             "demo_orders": [("order_type", "TEXT NOT NULL DEFAULT 'market'"), ("stop_price", "REAL"), ("limit_price", "REAL")],
         }
         for table, cols in wanted.items():

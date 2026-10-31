@@ -13,6 +13,7 @@ const DEFAULT: BacktestRequest = {
   symbol: "BTC/USD", strategy: "scalp", days: 3, short_window: 1, long_window: 3, order_value: 50,
   stop_loss_pct: 0.3, take_profit_pct: 0.6, max_hold_min: 10, fee_pct: 0.25, spread_pct: 0.05, apply_risk_limits: true,
   trend_filter: true, trend_minutes: 30,
+  atr_exits: true, atr_timeframe: "15Min", atr_periods: 14, atr_stop_mult: 1.5, atr_target_mult: 3.0,
 };
 
 /** Ausstiegs- und Kostenwerte je Anlageklasse – aus den Bot-Parametern, sonst Standardwerte. */
@@ -51,6 +52,9 @@ function validate(r: BacktestRequest): Partial<Record<keyof BacktestRequest, str
   if (!(r.fee_pct >= 0 && r.fee_pct <= 2)) e.fee_pct = "Zwischen 0 und 2 %.";
   if (!(r.spread_pct >= 0 && r.spread_pct <= 5)) e.spread_pct = "Zwischen 0 und 5 %.";
   if (r.trend_filter && !(r.trend_minutes >= 5 && r.trend_minutes <= 240)) e.trend_minutes = "Zwischen 5 und 240 Minuten.";
+  if (r.atr_exits && !(r.atr_periods >= 3 && r.atr_periods <= 50)) e.atr_periods = "Zwischen 3 und 50 Kerzen.";
+  if (r.atr_exits && !(r.atr_stop_mult > 0 && r.atr_stop_mult <= 10)) e.atr_stop_mult = "Zwischen 0 und 10.";
+  if (r.atr_exits && !(r.atr_target_mult > 0 && r.atr_target_mult <= 20)) e.atr_target_mult = "Zwischen 0 und 20.";
   return e;
 }
 
@@ -76,6 +80,8 @@ export function BacktestPage({ status }: { status: Status }) {
       ...r, symbol, strategy: p.strategy, short_window: short, long_window: long, order_value: p.order_value,
       ...classValues(symbol, p), ...(p.strategy === "sma" ? { spread_pct: 0.02 } : {}),
       trend_filter: p.strategy === "scalp" ? p.trend_filter : false, trend_minutes: p.trend_minutes,
+      atr_exits: p.strategy === "scalp" ? p.atr_exits : false, atr_timeframe: p.atr_timeframe, atr_periods: p.atr_periods,
+      atr_stop_mult: p.atr_stop_mult, atr_target_mult: p.atr_target_mult,
     }));
   }
   // Beim ersten Laden die aktuellen Bot-Parameter übernehmen
@@ -173,6 +179,7 @@ export function BacktestPage({ status }: { status: Status }) {
                     <dt>Ø Haltedauer</dt><dd>{m.avg_hold_min !== null ? `${num(m.avg_hold_min, 1)} Min.` : "—"}</dd>
                     <dt>Zeit im Markt</dt><dd>{m.exposure_pct !== null ? `${num(m.exposure_pct, 1)} %` : "—"}</dd>
                     <dt>Ausstiege</dt><dd>{Object.entries(m.exit_reasons).map(([k, v]) => `${k}: ${v}`).join(" · ") || "—"}</dd>
+                    {m.avg_stop_pct != null && <><dt>Ø Stop-Loss / Ziel</dt><dd>−{num(m.avg_stop_pct, 2)} % / +{num(m.avg_target_pct ?? 0, 2)} %{m.atr_trades ? ` · ${m.atr_trades} von ${m.trades} Trades nach ATR` : ""}</dd></>}
                     <dt>Gesperrte Einstiege</dt><dd>{Object.entries(m.blocked_entries).map(([k, v]) => `${k}: ${v}`).join(" · ") || "keine"}</dd>
                   </dl>
                 </Card>
@@ -254,6 +261,28 @@ export function BacktestPage({ status }: { status: Status }) {
                   {errors.trend_minutes && <span className="field-error">{errors.trend_minutes}</span>}
                 </label>
               )}
+              {req.strategy === "scalp" && (
+                <label className="check">
+                  <input type="checkbox" checked={req.atr_exits} onChange={(e) => set("atr_exits", e.target.checked)} />
+                  <span><strong>Ausstiege nach Schwankung (ATR)</strong> – Stop-Loss/Take-Profit als Vielfaches der ATR; die festen Werte oben gelten nur, solange die ATR nicht bestimmbar ist</span>
+                </label>
+              )}
+              {req.strategy === "scalp" && req.atr_exits && (
+                <div className="form-grid">
+                  <div className="field">
+                    <span>ATR-Kerzen</span>
+                    <Seg label="ATR-Kerzen" value={req.atr_timeframe} onChange={(v) => set("atr_timeframe", v)}
+                         options={[{ id: "5Min", label: "5 Min." }, { id: "15Min", label: "15 Min." }, { id: "1Hour", label: "1 Std." }]} />
+                  </div>
+                  {([["atr_periods", "ATR über (Kerzen)", "1"], ["atr_stop_mult", "Stop-Loss (× ATR)", "0.1"], ["atr_target_mult", "Take-Profit (× ATR)", "0.1"]] as const).map(([k, label, step]) => (
+                    <label key={k} className={`field ${errors[k] ? "invalid" : ""}`}>
+                      <span>{label}</span>
+                      <input type="number" step={step} min={0} value={req[k]} onChange={(e) => set(k, Number(e.target.value))} aria-invalid={!!errors[k]} />
+                      {errors[k] && <span className="field-error">{errors[k]}</span>}
+                    </label>
+                  ))}
+                </div>
+              )}
               <label className="check">
                 <input type="checkbox" checked={req.apply_risk_limits} onChange={(e) => set("apply_risk_limits", e.target.checked)} />
                 <span>Risikogrenzen des {mode}-Modus nachbilden (Einstiege pro Stunde/Tag, Verlustserie, Tagesverlust)</span>
@@ -276,7 +305,7 @@ export function BacktestPage({ status }: { status: Status }) {
                   <li key={r.id} className={`list-item ${result?.id === r.id ? "selected" : ""}`}>
                     <div>
                       <span className="sym">{r.symbol}</span>{" "}
-                      <span className="meta">{r.request.days} T · Ø {r.request.short_window}/{r.request.long_window}{r.strategy === "scalp" ? ` · SL/TP ${num(r.request.stop_loss_pct, 2)}/${num(r.request.take_profit_pct, 2)} %` : " · SMA"}{r.request.trend_filter ? " · Trend" : ""}</span>
+                      <span className="meta">{r.request.days} T · Ø {r.request.short_window}/{r.request.long_window}{r.strategy === "scalp" ? ` · SL/TP ${num(r.request.stop_loss_pct, 2)}/${num(r.request.take_profit_pct, 2)} %` : " · SMA"}{r.request.trend_filter ? " · Trend" : ""}{r.request.atr_exits ? " · ATR" : ""}</span>
                       <div className="meta">{shortDT(r.created_at)} · {r.metrics.trades} Trades{r.metrics.win_rate_pct !== null ? ` · ${num(r.metrics.win_rate_pct, 0)} % Treffer` : ""}</div>
                     </div>
                     <div className="val">

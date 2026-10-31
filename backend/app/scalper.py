@@ -29,7 +29,17 @@ from datetime import datetime, timedelta, timezone
 from decimal import ROUND_DOWN, ROUND_FLOOR, Decimal
 from typing import TYPE_CHECKING
 
-from .broker.base import FINAL_ORDER_STATUSES, LOCAL_FINAL, Bar, BrokerError, Order, Quote, is_crypto, is_open_status
+from .broker.base import (
+    FINAL_ORDER_STATUSES,
+    LOCAL_FINAL,
+    TIMEFRAMES,
+    Bar,
+    BrokerError,
+    Order,
+    Quote,
+    is_crypto,
+    is_open_status,
+)
 from .db import iso, parse_iso
 from .orders import OrderBlocked, OrderFailed, OrderInput
 from .risk import available_to_sell
@@ -40,7 +50,7 @@ from .settings_store import (
     get_bot_params,
     get_risk_limits,
 )
-from .strategy import TREND_SLOPE_BARS, evaluate, trend_ok
+from .strategy import TREND_SLOPE_BARS, atr_exit_pcts, atr_pct, evaluate, trend_ok
 
 if TYPE_CHECKING:  # pragma: no cover
     from .core import AppContext
@@ -250,6 +260,9 @@ class ScalpEngine:
                     block = f"Kurz vor Börsenschluss ({to_close:.0f} Min.) – keine neuen Einstiege"
                 elif crypto and is_open and params.crypto_outside_session_only and params.has_stocks:
                     block = "US-Börse offen – Krypto pausiert, Aktien/ETFs handeln"
+                elif (pause := self.symbol_pause(mode, symbol, now)) is not None:
+                    until = parse_iso(pause["until"])
+                    block = f"Symbol pausiert bis {until:%d.%m. %H:%M} UTC – {pause['reason']}" if until else "Symbol pausiert"
                 await self._maybe_enter(mode, params, symbol, st, q if fresh else None, now, block)
         self.state["symbols"] = {s: self.syms[s].view for s in symbols}
         open_trades = sum(1 for s in symbols if "trade" in self.syms[s].view)
@@ -304,6 +317,18 @@ class ScalpEngine:
                 done = [b for b in done if b.t >= start]
         return trend_ok([b.c for b in done], n, price)
 
+    async def _atr(self, mode: str, params: BotParams, symbol: str, now: datetime) -> float | None:
+        """ATR in % auf ``atr_timeframe``-Kerzen (zwischengespeichert); None, wenn nicht bestimmbar."""
+        rt = self.ctx.runtimes[mode]
+        seconds = TIMEFRAMES[params.atr_timeframe]
+        try:
+            bars, _, _ = await self.ctx.market.fetch(rt, symbol, params.atr_periods + 6, params.atr_timeframe)
+        except BrokerError:
+            return None
+        done = [b for b in bars if b.t + timedelta(seconds=seconds) <= now]
+        value = atr_pct(done, params.atr_periods, seconds)
+        return round(value, 4) if value else None
+
     # ------------------------------------------------------------ Einstieg
     async def _maybe_enter(self, mode: str, params: BotParams, symbol: str, st: _SymState, quote: Quote | None,
                            now: datetime, block: str | None = None) -> None:
@@ -352,6 +377,7 @@ class ScalpEngine:
                 self._decide(mode, symbol, "buy", "skip", f"{sig.reason}; Trendfilter: {why}", **extra)
                 st.view["status"] = f"Signal ausgelassen – Trendfilter: {why}"
                 return
+        atr = await self._atr(mode, params, symbol, now) if params.atr_exits else None
         inp = OrderInput(
             symbol=symbol, side="buy", time_in_force="gtc" if crypto else "day",
             notional=Decimal(str(params.order_value)).quantize(Decimal("0.01"), rounding=ROUND_DOWN),
@@ -371,12 +397,13 @@ class ScalpEngine:
             return
         ts = iso(now)
         self._db().execute(
-            "INSERT INTO trades (mode, symbol, status, entry_cid, fee_pct, created_at, updated_at) "
-            "VALUES (?, ?, 'entering', ?, ?, ?, ?)",
-            (mode, symbol, res["order"]["client_order_id"], params.profile(symbol).fee_pct, ts, ts),
+            "INSERT INTO trades (mode, symbol, status, entry_cid, fee_pct, atr_pct, created_at, updated_at) "
+            "VALUES (?, ?, 'entering', ?, ?, ?, ?, ?)",
+            (mode, symbol, res["order"]["client_order_id"], params.profile(symbol).fee_pct, atr, ts, ts),
         )
+        basis = f", ATR {atr:.3f} %" if atr else (", ATR nicht bestimmbar – feste Werte" if params.atr_exits else "")
         self._decide(mode, symbol, "buy", "order",
-                     f"{sig.reason}; Einstieg {params.order_value:g} USD gesendet (Spread {quote.spread_pct:.3f} %)", **extra)
+                     f"{sig.reason}; Einstieg {params.order_value:g} USD gesendet (Spread {quote.spread_pct:.3f} %{basis})", **extra)
         st.view["status"] = "Einstieg gesendet – warte auf Ausführung"
 
     # ------------------------------------------------------------ Trades
@@ -442,6 +469,10 @@ class ScalpEngine:
     def _open_trade(self, mode: str, trade: dict, order: Order, now: datetime) -> None:
         params = get_bot_params(self._db(), mode)
         prof = params.profile(trade["symbol"])
+        sl_pct, tp_pct, basis = prof.stop_loss_pct, prof.take_profit_pct, "feste Werte"
+        if trade.get("atr_pct"):
+            sl_pct, tp_pct = atr_exit_pcts(trade["atr_pct"], params.atr_stop_mult, params.atr_target_mult, prof.fee_pct)
+            basis = f"ATR {trade['atr_pct']:.3f} % × {params.atr_stop_mult:g}/{params.atr_target_mult:g}"
         entry = order.filled_avg_price or 0.0
         entry_time = order.filled_at or now
         self._update(
@@ -450,14 +481,14 @@ class ScalpEngine:
             entry_time=iso(entry_time),
             entry_qty=order.filled_qty,
             entry_price=entry,
-            stop_price=round(entry * (1 - prof.stop_loss_pct / 100), 6),
-            target_price=round(entry * (1 + prof.take_profit_pct / 100), 6),
+            stop_price=round(entry * (1 - sl_pct / 100), 6),
+            target_price=round(entry * (1 + tp_pct / 100), 6),
             deadline=iso(entry_time + timedelta(minutes=prof.max_hold_min)),
         )
         self._db().add_event(
             mode, "info", "trade",
             f"Einstieg ausgeführt: {order.filled_qty:g} {trade['symbol']} zu {entry:.2f}. "
-            f"Stop-Loss −{prof.stop_loss_pct:g} %, Take-Profit +{prof.take_profit_pct:g} %, "
+            f"Stop-Loss −{sl_pct:g} %, Take-Profit +{tp_pct:g} % ({basis}), "
             f"max. {prof.max_hold_min:g} Min.",
         )
 
@@ -485,6 +516,7 @@ class ScalpEngine:
             f"Kosten ~{fees:.2f}, netto {net:+.2f} USD",
         )
         self._check_loss_streak(mode, trade["id"], now)
+        self._check_symbol_pause(mode, trade["symbol"], trade["id"], now)
 
     def _check_loss_streak(self, mode: str, trade_id: int, now: datetime) -> None:
         limits = get_risk_limits(self._db(), mode)
@@ -509,6 +541,97 @@ class ScalpEngine:
                 f"{streak} Verlust-Trades in Folge – neue Käufe pausiert für {limits.loss_pause_min} Min. "
                 "(Verkäufe bleiben möglich).",
             )
+
+    # ------------------------------------------------- Auto-Pause je Symbol
+    def symbol_pause(self, mode: str, symbol: str, now: datetime) -> dict | None:
+        pause = self._db().get(mode, f"symbol_pause:{symbol}")
+        if not pause:
+            return None
+        until = parse_iso(pause.get("until"))
+        return pause if until is not None and now < until else None
+
+    def _check_symbol_pause(self, mode: str, symbol: str, trade_id: int, now: datetime) -> None:
+        params = get_bot_params(self._db(), mode)
+        if not params.symbol_pause:
+            return
+        since = int(self._db().get(mode, f"symbol_pause_since:{symbol}", 0) or 0)
+        rows = self._db().query(
+            "SELECT net_pnl FROM trades WHERE mode=? AND symbol=? AND status='closed' AND id>? "
+            "AND net_pnl IS NOT NULL ORDER BY id DESC LIMIT ?",
+            (mode, symbol, since, params.symbol_pause_trades),
+        )
+        if len(rows) < params.symbol_pause_trades:
+            return
+        net = sum(r["net_pnl"] for r in rows)
+        if net >= 0:
+            return
+        until = now + timedelta(hours=params.symbol_pause_hours)
+        reason = f"letzte {len(rows)} Trades zusammen {net:+.2f} USD"
+        self._db().set(mode, f"symbol_pause:{symbol}", {"until": iso(until), "reason": reason, "net": round(net, 2)})
+        self._db().set(mode, f"symbol_pause_since:{symbol}", trade_id)  # danach zählt ein neues Fenster
+        self._db().add_event(
+            mode, "warning", "risk",
+            f"{symbol} pausiert für {params.symbol_pause_hours:g} Std.: {reason}. Andere Symbole handeln weiter; "
+            "fortsetzen unter Bot → Statistik je Symbol.",
+        )
+
+    def resume_symbol(self, mode: str, symbol: str) -> bool:
+        if not self._db().get(mode, f"symbol_pause:{symbol}"):
+            return False
+        self._db().set(mode, f"symbol_pause:{symbol}", None)
+        self._db().add_event(mode, "info", "risk", f"{symbol}: Pause manuell aufgehoben – neues Bewertungsfenster beginnt.")
+        return True
+
+    def symbol_stats(self, mode: str, days: int | None, symbols: list[str]) -> list[dict]:
+        """Kennzahlen je Symbol aus abgeschlossenen Bot-Trades (Kosten geschätzt)."""
+        now = self.ctx._now()
+        rows = self._db().query(
+            "SELECT symbol, net_pnl, entry_time, exit_time, exit_reason FROM trades "
+            "WHERE mode=? AND status='closed' AND net_pnl IS NOT NULL",
+            (mode,),
+        )
+        cutoff = now - timedelta(days=days) if days else None
+        by: dict[str, list[dict]] = {s: [] for s in symbols}
+        for r in rows:
+            exit_time = parse_iso(r["exit_time"])
+            if cutoff is not None and (exit_time is None or exit_time < cutoff):
+                continue
+            by.setdefault(r["symbol"], []).append({**r, "_exit": exit_time})
+        out = []
+        for symbol, trades in by.items():
+            nets = [t["net_pnl"] for t in trades]
+            wins = [n for n in nets if n > 0]
+            losses = [n for n in nets if n <= 0]
+            holds = [
+                (t["_exit"] - e).total_seconds() / 60
+                for t in trades
+                if t["_exit"] is not None and (e := parse_iso(t["entry_time"])) is not None
+            ]
+            reasons: dict[str, int] = {}
+            for t in trades:
+                key = t["exit_reason"] or "—"
+                reasons[key] = reasons.get(key, 0) + 1
+            pause = self.symbol_pause(mode, symbol, now)
+            out.append({
+                "symbol": symbol,
+                "active": symbol in symbols,
+                "trades": len(trades),
+                "wins": len(wins),
+                "losses": len(losses),
+                "win_rate_pct": round(len(wins) / len(trades) * 100, 1) if trades else None,
+                "net": round(sum(nets), 2),
+                "avg_net": round(sum(nets) / len(nets), 4) if nets else None,
+                "profit_factor": round(sum(wins) / abs(sum(losses)), 2) if losses and sum(losses) != 0 else None,
+                "avg_hold_min": round(sum(holds) / len(holds), 1) if holds else None,
+                "best": round(max(nets), 2) if nets else None,
+                "worst": round(min(nets), 2) if nets else None,
+                "last_exit": iso(max((t["_exit"] for t in trades if t["_exit"]), default=None)),
+                "exit_reasons": reasons,
+                "paused_until": pause["until"] if pause else None,
+                "pause_reason": pause["reason"] if pause else None,
+            })
+        out.sort(key=lambda x: (not x["active"], -x["trades"], x["symbol"]))
+        return out
 
     # ------------------------------------------------------ Schutzorder
     async def _place_stop(self, mode: str, params: BotParams, trade: dict, now: datetime) -> None:
@@ -582,6 +705,7 @@ class ScalpEngine:
             "stop_price": trade["stop_price"], "target_price": trade["target_price"],
             "deadline": trade["deadline"], "entry_time": trade["entry_time"],
             "broker_stop": bool(trade.get("stop_cid")),
+            "atr_pct": trade.get("atr_pct"),
         }
         reason = None
         if quote is not None and entry > 0:
